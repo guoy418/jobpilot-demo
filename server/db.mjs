@@ -4,8 +4,10 @@ import { DatabaseSync } from "node:sqlite";
 
 const DATA_DIR = path.join(process.cwd(), "server", "data");
 const DB_PATH = process.env.JOBPILOT_DB_PATH || path.join(DATA_DIR, "jobpilot.local.sqlite");
+const FILE_DIR = process.env.JOBPILOT_FILE_DIR || path.join(DATA_DIR, "files");
 
 const submittedStatuses = ["APPLIED", "WRITTEN TEST", "INTERVIEWING", "WAITING", "OFFER"];
+const opportunityStatusFlow = ["TO APPLY", "APPLIED", "WRITTEN TEST", "INTERVIEWING", "WAITING", "OFFER"];
 const opportunityStatusAction = {
   "TO APPLY": "P0",
   APPLIED: "P1",
@@ -23,6 +25,74 @@ const opportunityStatusNextAction = {
   OFFER: "整理 offer 对比和入职材料",
 };
 
+const dayMs = 24 * 60 * 60 * 1000;
+const actionPriorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
+const actionByRank = ["P0", "P1", "P2", "P3"];
+const baseActionRank = {
+  "TO APPLY": 1,
+  APPLIED: 1,
+  "WRITTEN TEST": 1,
+  INTERVIEWING: 1,
+  WAITING: 2,
+  OFFER: 3,
+};
+
+const dateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const addDays = (days) => {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + days);
+  return dateKey(date);
+};
+
+const inferDueDateFromText = (deadline = "") => {
+  const text = String(deadline).trim();
+  if (!text || text === "待定") return "";
+  if (/今晚|today|tonight/i.test(text)) return addDays(0);
+  if (/明天|tomorrow/i.test(text)) return addDays(1);
+  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")}`;
+  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
+  if (cnDateMatch) return `${new Date().getFullYear()}-${cnDateMatch[1].padStart(2, "0")}-${cnDateMatch[2].padStart(2, "0")}`;
+  const parsedDate = new Date(text);
+  return Number.isNaN(parsedDate.getTime()) ? "" : dateKey(parsedDate);
+};
+
+const getOpportunityDueDate = (opportunity) => opportunity.dueDate || inferDueDateFromText(opportunity.deadline);
+
+const getOpportunityDaysUntilDue = (opportunity) => {
+  const dueDate = getOpportunityDueDate(opportunity);
+  if (!dueDate) return null;
+  const due = new Date(`${dueDate}T00:00:00`);
+  if (Number.isNaN(due.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.ceil((due.getTime() - today.getTime()) / dayMs);
+};
+
+const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match = "MEDIUM", priority = "B" }) => {
+  if (status === "OFFER") return "P3";
+  const daysUntilDue = getOpportunityDaysUntilDue({ deadline, dueDate });
+  let rank = baseActionRank[status] ?? actionPriorityRank.P2;
+  if (daysUntilDue !== null) {
+    if (daysUntilDue <= 1) rank = 0;
+    else if (daysUntilDue <= 3 && status !== "WAITING") rank = Math.min(rank, 1);
+    else if (daysUntilDue <= 7 && status === "TO APPLY") rank = Math.min(rank, 1);
+  }
+  if (status === "TO APPLY" && priority === "A" && match === "HIGH") rank = Math.min(rank, 0);
+  else if (priority === "A" && status !== "WAITING") rank = Math.min(rank, 1);
+  if (daysUntilDue === null && priority === "C" && match === "LOW" && status === "TO APPLY") rank = Math.max(rank, 2);
+  return actionByRank[Math.max(0, Math.min(3, rank))];
+};
+
+const sortTodayActions = (actions) => [...actions].sort((left, right) => actionPriorityRank[left.level] - actionPriorityRank[right.level]);
+
 const nowIso = () => new Date().toISOString();
 let idSequence = 0;
 const makeId = (prefix) => {
@@ -30,6 +100,13 @@ const makeId = (prefix) => {
   return `${prefix}-${Date.now().toString().slice(-5)}-${idSequence.toString().padStart(4, "0")}-${Math.floor(Math.random() * 90 + 10)}`;
 };
 const sequenceIso = (index) => new Date(Date.now() + index).toISOString();
+const sanitizeFileName = (fileName = "upload.bin") =>
+  fileName
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "upload.bin";
 
 const rowsToMap = (rows, key) =>
   rows.reduce((groups, row) => {
@@ -47,6 +124,90 @@ const parseJson = (value, fallback = []) => {
   }
 };
 
+const formatFileSize = (bytes) => {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+};
+
+const storageUriToFileName = (storageUri = "") => {
+  const prefix = "/api/files/";
+  if (!storageUri.startsWith(prefix)) return "";
+  return sanitizeFileName(decodeURIComponent(storageUri.slice(prefix.length)));
+};
+
+const assertArray = (value, label) => {
+  if (!Array.isArray(value)) throw new Error(`Backup field ${label} must be an array`);
+  return value;
+};
+
+const hasTimelineSignal = (opportunity, keyword) =>
+  opportunity.timeline.some((event) => `${event.title} ${event.detail}`.includes(keyword));
+
+const buildOpportunityPipeline = (opportunity, sessions) => {
+  const currentIndex = opportunityStatusFlow.indexOf(opportunity.status);
+  const hasWrittenTest = opportunity.status === "WRITTEN TEST" || hasTimelineSignal(opportunity, "笔试");
+  const hasInterview = sessions.length > 0 || ["INTERVIEWING", "WAITING", "OFFER"].includes(opportunity.status);
+
+  const stageState = (stageStatus, optional = false) => {
+    const stageIndex = opportunityStatusFlow.indexOf(stageStatus);
+    if (stageStatus === opportunity.status) return "current";
+    if (optional && stageStatus === "WRITTEN TEST" && currentIndex > stageIndex && !hasWrittenTest) return "skipped";
+    if (stageIndex < currentIndex) return "done";
+    return "next";
+  };
+
+  return [
+    {
+      key: "to-apply",
+      label: "待投递",
+      state: stageState("TO APPLY"),
+      detail: opportunity.status === "TO APPLY" ? opportunity.nextAction : `已使用 ${opportunity.resumeId ? "简历版本" : "待选简历"} 建档`,
+      source: "system",
+    },
+    {
+      key: "applied",
+      label: "已投递",
+      state: stageState("APPLIED"),
+      detail: submittedStatuses.includes(opportunity.status) ? "投递动作已完成或被手动确认" : "点击“标记已投递”后自动推进",
+      source: "manual",
+    },
+    {
+      key: "written-test",
+      label: "笔试",
+      state: stageState("WRITTEN TEST", true),
+      detail: hasWrittenTest ? "已记录笔试或测评节点" : "不是每个岗位都有，未出现时可跳过",
+      source: hasWrittenTest ? "manual" : "system",
+    },
+    {
+      key: "interview",
+      label: "约面",
+      state: stageState("INTERVIEWING"),
+      detail: hasInterview ? (sessions.length > 0 ? `${sessions.length} 场面试已关联` : "已进入面试/等结果阶段") : "添加面试复盘后自动推进到这里",
+      source: sessions.length > 0 ? "system" : "manual",
+      subItems: sessions.map((session) => ({
+        label: session.round,
+        detail: `${session.company} / ${session.role} / ${session.date}`,
+        state: "done",
+      })),
+    },
+    {
+      key: "waiting",
+      label: "等结果",
+      state: stageState("WAITING"),
+      detail: opportunity.status === "WAITING" ? opportunity.nextAction : "面试结束后可手动切到等结果",
+      source: "manual",
+    },
+    {
+      key: "offer",
+      label: "Offer",
+      state: stageState("OFFER"),
+      detail: opportunity.status === "OFFER" ? "已进入 Offer 对比和取舍" : "最终结果节点",
+      source: "manual",
+    },
+  ];
+};
+
 const toOpportunity = (row, sourceAssets = [], timeline = []) => ({
   id: row.id,
   title: row.title,
@@ -57,6 +218,7 @@ const toOpportunity = (row, sourceAssets = [], timeline = []) => ({
   action: row.action,
   city: row.city,
   deadline: row.deadline,
+  dueDate: row.due_date ?? undefined,
   resumeId: row.resume_id ?? "",
   nextAction: row.next_action,
   jdSummary: row.jd_summary,
@@ -72,6 +234,7 @@ const toSourceAsset = (row) => ({
   detail: row.detail,
   createdAt: row.created_at,
   content: row.content ?? undefined,
+  storageUri: row.storage_uri ?? undefined,
 });
 
 const toTimelineEvent = (row) => ({
@@ -89,6 +252,8 @@ const toSessionFile = (row) => ({
   detail: row.detail,
   uploadedAt: row.uploaded_at,
   duration: row.duration ?? undefined,
+  storageUri: row.storage_uri ?? undefined,
+  content: row.content ?? undefined,
 });
 
 const toQaPair = (row) => ({
@@ -120,6 +285,7 @@ const toAnswerCard = (row) => ({
   type: row.type,
   status: row.status,
   source: row.source,
+  sourceQaPairId: row.source_qa_pair_id ?? undefined,
   framework: row.framework,
   answer: row.answer,
   relatedRoles: row.related_roles,
@@ -137,6 +303,7 @@ const toResumeVersion = (row, linkedOpportunityIds = []) => ({
   points: row.points,
   summary: row.summary,
   linkedOpportunityIds,
+  storageUri: row.storage_uri ?? undefined,
 });
 
 const toWeeklyTask = (row) => ({
@@ -146,6 +313,7 @@ const toWeeklyTask = (row) => ({
   source: row.source,
   sourceLabel: row.source_label,
   relatedEntityId: row.related_entity_id ?? undefined,
+  level: row.level ?? "P2",
   status: row.status,
 });
 
@@ -163,6 +331,7 @@ const createSchema = (db) => {
       action TEXT NOT NULL,
       city TEXT NOT NULL,
       deadline TEXT NOT NULL,
+      due_date TEXT,
       resume_id TEXT,
       next_action TEXT NOT NULL,
       jd_summary TEXT NOT NULL,
@@ -178,6 +347,7 @@ const createSchema = (db) => {
       title TEXT NOT NULL,
       detail TEXT NOT NULL,
       content TEXT,
+      storage_uri TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
     );
@@ -213,6 +383,7 @@ const createSchema = (db) => {
       detail TEXT NOT NULL,
       uploaded_at TEXT NOT NULL,
       duration TEXT,
+      content TEXT,
       storage_uri TEXT,
       FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE CASCADE
     );
@@ -284,12 +455,29 @@ const createSchema = (db) => {
       source TEXT NOT NULL,
       source_label TEXT NOT NULL,
       related_entity_id TEXT,
+      level TEXT NOT NULL DEFAULT 'P2',
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (weekly_plan_id) REFERENCES weekly_plans(id) ON DELETE CASCADE
     );
   `);
+};
+
+const ensureColumn = (db, tableName, columnName, definition) => {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  if (!columns.some((column) => column.name === columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+};
+
+const migrateSchema = (db) => {
+  ensureColumn(db, "opportunities", "due_date", "TEXT");
+  ensureColumn(db, "opportunity_source_assets", "storage_uri", "TEXT");
+  ensureColumn(db, "interview_source_files", "content", "TEXT");
+  ensureColumn(db, "interview_source_files", "storage_uri", "TEXT");
+  ensureColumn(db, "resume_versions", "storage_uri", "TEXT");
+  ensureColumn(db, "weekly_tasks", "level", "TEXT NOT NULL DEFAULT 'P2'");
 };
 
 const seedDatabase = (db) => {
@@ -505,8 +693,10 @@ const seedDatabase = (db) => {
 
 export const openDatabase = () => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(FILE_DIR, { recursive: true });
   const db = new DatabaseSync(DB_PATH);
   createSchema(db);
+  migrateSchema(db);
   seedDatabase(db);
   return db;
 };
@@ -539,8 +729,8 @@ export const createRepository = (db) => {
     db.prepare("DELETE FROM opportunity_source_assets WHERE opportunity_id = ?").run(opportunityId);
     const insertSource = db.prepare(`
       INSERT INTO opportunity_source_assets (
-        id, opportunity_id, kind, title, detail, content, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        id, opportunity_id, kind, title, detail, content, storage_uri, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     sourceAssets.forEach((asset, index) =>
       insertSource.run(
@@ -550,6 +740,7 @@ export const createRepository = (db) => {
         asset.title?.trim() || "岗位 JD",
         asset.detail?.trim() || "岗位原始材料",
         asset.content ?? null,
+        asset.storageUri ?? null,
         asset.createdAt?.trim() || sequenceIso(index),
       ),
     );
@@ -578,22 +769,28 @@ export const createRepository = (db) => {
   const createOpportunity = (input) => {
     const timestamp = nowIso();
     const status = input.status || "TO APPLY";
+    const deadline = input.deadline?.trim() || "待定";
+    const dueDate = input.dueDate || inferDueDateFromText(deadline);
+    const priority = input.priority || "B";
+    const match = input.match || "MEDIUM";
+    const action = computeOpportunityAction({ status, deadline, dueDate, match, priority });
     const id = input.id || makeId("OP");
     db.prepare(`
       INSERT INTO opportunities (
-        id, title, company, status, priority, match, action, city, deadline, resume_id,
+        id, title, company, status, priority, match, action, city, deadline, due_date, resume_id,
         next_action, jd_summary, jd_text, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.title?.trim() || "未填写岗位",
       input.company?.trim() || "未填写公司",
       status,
-      input.priority || "B",
-      input.match || "MEDIUM",
-      input.action || opportunityStatusAction[status] || "P2",
+      priority,
+      match,
+      action,
       input.city?.trim() || "待定",
-      input.deadline?.trim() || "待定",
+      deadline,
+      dueDate || null,
       input.resumeId || null,
       input.nextAction?.trim() || opportunityStatusNextAction[status] || "补齐材料后投递",
       input.jdSummary?.trim() || "由岗位管理内上传材料解析生成的岗位记录。",
@@ -613,6 +810,10 @@ export const createRepository = (db) => {
       ...current,
       ...patch,
     };
+    if ("deadline" in patch && !("dueDate" in patch)) next.dueDate = inferDueDateFromText(next.deadline);
+    if (["status", "deadline", "dueDate", "priority", "match"].some((field) => field in patch) && !("action" in patch)) {
+      next.action = computeOpportunityAction(next);
+    }
     db.prepare(`
       UPDATE opportunities
       SET title = ?,
@@ -623,6 +824,7 @@ export const createRepository = (db) => {
           action = ?,
           city = ?,
           deadline = ?,
+          due_date = ?,
           resume_id = ?,
           next_action = ?,
           jd_summary = ?,
@@ -638,6 +840,7 @@ export const createRepository = (db) => {
       next.action,
       next.city,
       next.deadline,
+      next.dueDate || null,
       next.resumeId || null,
       next.nextAction,
       next.jdSummary,
@@ -677,12 +880,29 @@ export const createRepository = (db) => {
           ]
         : []),
     ];
-    return updateOpportunity(id, {
+    const updatedOpportunity = updateOpportunity(id, {
       status,
-      action: input.action || opportunityStatusAction[status] || current.action,
+      action: input.action || computeOpportunityAction({ ...current, status }),
       nextAction,
       timeline: nextTimeline,
     });
+    if (status === "APPLIED" && !submittedStatuses.includes(current.status)) {
+      const existingFollowupTask = db
+        .prepare("SELECT id FROM weekly_tasks WHERE source = ? AND related_entity_id = ? LIMIT 1")
+        .get("opportunity", id);
+      if (!existingFollowupTask) {
+        createWeeklyTask({
+          title: `跟进${updatedOpportunity.company}${updatedOpportunity.title}`,
+          detail: "投递后自动生成的跟进动作，避免投完就丢。",
+          source: "opportunity",
+          sourceLabel: "岗位管理",
+          relatedEntityId: id,
+          level: "P1",
+          status: "open",
+        });
+      }
+    }
+    return updatedOpportunity;
   };
 
   const deleteOpportunity = (id) => {
@@ -690,6 +910,7 @@ export const createRepository = (db) => {
     if (!current) return false;
     const timestamp = nowIso();
     db.prepare("UPDATE interview_sessions SET opportunity_id = NULL, updated_at = ? WHERE opportunity_id = ?").run(timestamp, id);
+    db.prepare("DELETE FROM weekly_tasks WHERE source = ? AND related_entity_id = ?").run("opportunity", id);
     db.prepare("DELETE FROM opportunities WHERE id = ?").run(id);
     return true;
   };
@@ -777,8 +998,8 @@ export const createRepository = (db) => {
 
     const insertFile = db.prepare(`
       INSERT INTO interview_source_files (
-        id, interview_session_id, kind, file_name, detail, uploaded_at, duration, storage_uri
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, interview_session_id, kind, file_name, detail, uploaded_at, duration, content, storage_uri
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     (input.sourceFiles ?? []).forEach((file) =>
       insertFile.run(
@@ -789,6 +1010,7 @@ export const createRepository = (db) => {
         file.detail?.trim() || "面试原始材料",
         file.uploadedAt?.trim() || "Now",
         file.duration ?? null,
+        file.content ?? null,
         file.storageUri ?? null,
       ),
     );
@@ -820,6 +1042,7 @@ export const createRepository = (db) => {
   const deleteInterview = (id) => {
     const current = getInterview(id);
     if (!current) return false;
+    db.prepare("DELETE FROM weekly_tasks WHERE source = ? AND related_entity_id = ?").run("interview", id);
     db.prepare("DELETE FROM interview_sessions WHERE id = ?").run(id);
     return true;
   };
@@ -897,6 +1120,33 @@ export const createRepository = (db) => {
     return getAnswer(id);
   };
 
+  const createAnswerFromQaPair = (qaPairId) => {
+    const existing = db.prepare("SELECT * FROM answer_cards WHERE source_qa_pair_id = ? LIMIT 1").get(qaPairId);
+    if (existing) return toAnswerCard(existing);
+
+    const row = db
+      .prepare(
+        `SELECT qa_pairs.*, interview_sessions.role
+         FROM qa_pairs
+         JOIN interview_sessions ON interview_sessions.id = qa_pairs.interview_session_id
+         WHERE qa_pairs.id = ?`,
+      )
+      .get(qaPairId);
+    if (!row) return null;
+
+    return createAnswer({
+      question: row.question,
+      type: row.type,
+      status: row.weak ? "NEEDS PRACTICE" : "DRAFT",
+      source: "面试复盘",
+      sourceQaPairId: qaPairId,
+      framework: row.framework,
+      answer: row.optimized_answer,
+      relatedRoles: row.role,
+      practiceStatus: row.weak ? "练习中" : "未练习",
+    });
+  };
+
   const updateAnswer = (id, patch) => {
     const current = getAnswer(id);
     if (!current) return null;
@@ -934,6 +1184,7 @@ export const createRepository = (db) => {
   const deleteAnswer = (id) => {
     const current = getAnswer(id);
     if (!current) return false;
+    db.prepare("DELETE FROM weekly_tasks WHERE source = ? AND related_entity_id = ?").run("answer", id);
     db.prepare("DELETE FROM answer_cards WHERE id = ?").run(id);
     return true;
   };
@@ -1002,6 +1253,7 @@ export const createRepository = (db) => {
           roles = ?,
           points = ?,
           summary = ?,
+          storage_uri = ?,
           updated_at = ?
       WHERE id = ?
     `).run(
@@ -1013,6 +1265,7 @@ export const createRepository = (db) => {
       next.roles,
       next.points,
       next.summary,
+      next.storageUri ?? null,
       nowIso(),
       id,
     );
@@ -1084,16 +1337,17 @@ export const createRepository = (db) => {
     db.prepare(`
       INSERT INTO weekly_tasks (
         id, weekly_plan_id, title, detail, source, source_label, related_entity_id,
-        status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        level, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       plan.id,
-      input.title?.trim() || "新增本周动作",
-      input.detail?.trim() || "来自本周计划，可在这里改成具体行动",
+      input.title?.trim() || "新增训练或杂项动作",
+      input.detail?.trim() || "适合放练笔试、练英语、补材料等不属于具体岗位或面试的问题。",
       input.source || "manual",
-      input.sourceLabel?.trim() || "手动计划",
+      input.sourceLabel?.trim() || "训练计划",
       input.relatedEntityId ?? null,
+      input.level || "P2",
       input.status || "open",
       timestamp,
       timestamp,
@@ -1115,6 +1369,7 @@ export const createRepository = (db) => {
           source = ?,
           source_label = ?,
           related_entity_id = ?,
+          level = ?,
           status = ?,
           updated_at = ?
       WHERE id = ?
@@ -1124,6 +1379,7 @@ export const createRepository = (db) => {
       next.source,
       next.sourceLabel,
       next.relatedEntityId ?? null,
+      next.level || "P2",
       next.status,
       nowIso(),
       id,
@@ -1142,13 +1398,14 @@ export const createRepository = (db) => {
     const opportunities = listOpportunities();
     const interviews = listInterviews();
     const weeklyPlan = getCurrentWeeklyPlan();
+    const opportunityActions = opportunities.map(computeOpportunityAction);
     const submittedApplications = opportunities.filter((item) => submittedStatuses.includes(item.status)).length;
-    const urgentCount = opportunities.filter((item) => item.action === "P0" || item.action === "P1").length;
+    const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
     const pendingReviewCount = interviews.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
     const toApplyCount = opportunities.filter((item) => item.status === "TO APPLY").length;
     const inProgressCount = opportunities.filter((item) => item.status !== "TO APPLY" && item.status !== "OFFER").length;
-    const p0Count = opportunities.filter((item) => item.action === "P0").length;
-    const p1Count = opportunities.filter((item) => item.action === "P1").length;
+    const p0Count = opportunityActions.filter((action) => action === "P0").length;
+    const p1Count = opportunityActions.filter((action) => action === "P1").length;
     const weakInterviewCount = interviews.filter((item) => item.qaPairs.some((pair) => pair.weak)).length;
     const targetApplications = weeklyPlan?.targetApplications ?? 0;
 
@@ -1159,6 +1416,7 @@ export const createRepository = (db) => {
       urgentCount,
       p0Count,
       p1Count,
+      pendingReviewCount,
       weakQaCount: pendingReviewCount,
       weakInterviewCount,
       submittedApplications,
@@ -1170,14 +1428,21 @@ export const createRepository = (db) => {
   const getTodayActions = () => {
     const opportunities = listOpportunities();
     const interviews = listInterviews();
+    const answers = listAnswers();
     const weeklyPlan = getCurrentWeeklyPlan();
     const resumes = listResumes();
     const resumeName = (resumeId) => resumes.find((resume) => resume.id === resumeId)?.name ?? "未选择简历";
+    const weeklyRoute = (task) => {
+      if (task.source === "interview" && task.relatedEntityId) return { page: "interviews", targetPage: "interviews", targetId: task.relatedEntityId };
+      if (task.source === "opportunity" && task.relatedEntityId) return { page: "opportunityDetail", targetPage: "opportunityDetail", targetId: task.relatedEntityId };
+      if (task.source === "answer" && task.relatedEntityId) return { page: "answers", targetPage: "answers", targetId: task.relatedEntityId };
+      return { page: "weekly", targetPage: "weekly", targetId: task.id };
+    };
 
     const opportunityActions = opportunities
       .filter((item) => item.status !== "OFFER")
       .map((item) => ({
-        level: item.action,
+        level: computeOpportunityAction(item),
         title:
           item.status === "TO APPLY"
             ? `投递${item.company}${item.title}`
@@ -1187,6 +1452,9 @@ export const createRepository = (db) => {
                 ? `准备${item.company}${item.title}`
                 : `跟进${item.company}${item.title}`,
         detail: `${item.nextAction} / 使用 ${resumeName(item.resumeId)}`,
+        page: "opportunityDetail",
+        filter: computeOpportunityAction(item),
+        source: "opportunity",
         targetPage: "opportunityDetail",
         targetId: item.id,
       }));
@@ -1197,6 +1465,9 @@ export const createRepository = (db) => {
         level: "P1",
         title: `复盘${session.company}${session.round}`,
         detail: `${session.qaPairs.filter((pair) => pair.weak).length} 个薄弱回答需要处理`,
+        page: "interviews",
+        filter: "",
+        source: "interview",
         targetPage: "interviews",
         targetId: session.id,
       }));
@@ -1204,15 +1475,174 @@ export const createRepository = (db) => {
     const weeklyActions = (weeklyPlan?.tasks ?? [])
       .filter((task) => task.status === "open")
       .map((task) => ({
-        level: "P2",
+        level: task.level || "P2",
         title: task.title,
         detail: `${task.sourceLabel}: ${task.detail}`,
-        targetPage: "weekly",
-        targetId: task.id,
+        filter: "",
+        source: "weekly",
+        taskId: task.id,
+        ...weeklyRoute(task),
       }));
 
-    const rawActions = [...opportunityActions, ...interviewActions, ...weeklyActions];
-    return rawActions.filter((action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index);
+    const openAnswerTaskIds = new Set(
+      (weeklyPlan?.tasks ?? [])
+        .filter((task) => task.status === "open" && task.source === "answer" && task.relatedEntityId)
+        .map((task) => task.relatedEntityId),
+    );
+    const answerActions = answers
+      .filter((card) => card.status === "NEEDS PRACTICE" && !openAnswerTaskIds.has(card.id))
+      .map((card) => ({
+        level: "P2",
+        title: `练习答案：${card.question}`,
+        detail: `${card.source}: ${card.practiceStatus} / 适用 ${card.relatedRoles || "待补充岗位"}`,
+        page: "answers",
+        filter: "",
+        source: "answer",
+        targetPage: "answers",
+        targetId: card.id,
+      }));
+
+    const rawActions = [...opportunityActions, ...interviewActions, ...answerActions, ...weeklyActions];
+    return sortTodayActions(rawActions.filter((action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index));
+  };
+
+  const getOpportunityPipeline = (id) => {
+    const opportunity = getOpportunity(id);
+    if (!opportunity) return null;
+    const sessions = listInterviews().filter((session) => session.opportunityId === id);
+    return buildOpportunityPipeline(opportunity, sessions);
+  };
+
+  const listStoredFiles = () => {
+    fs.mkdirSync(FILE_DIR, { recursive: true });
+    return fs
+      .readdirSync(FILE_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => {
+        const filePath = path.join(FILE_DIR, entry.name);
+        const buffer = fs.readFileSync(filePath);
+        return {
+          storageUri: `/api/files/${encodeURIComponent(entry.name)}`,
+          fileName: entry.name,
+          fileSize: formatFileSize(buffer.length),
+          dataBase64: buffer.toString("base64"),
+        };
+      });
+  };
+
+  const createBackup = () => ({
+    schemaVersion: "jobpilot-v0.7.2",
+    exportedAt: nowIso(),
+    source: "local-api",
+    opportunities: listOpportunities(),
+    interviewSessions: listInterviews(),
+    answerCards: listAnswers(),
+    resumeVersions: listResumes(),
+    weeklyPlan: getCurrentWeeklyPlan(),
+    storedFiles: listStoredFiles(),
+  });
+
+  const restoreBackup = (backup) => {
+    const resumeVersions = assertArray(backup?.resumeVersions, "resumeVersions");
+    const opportunities = assertArray(backup?.opportunities, "opportunities");
+    const interviewSessions = assertArray(backup?.interviewSessions, "interviewSessions");
+    const answerCards = assertArray(backup?.answerCards, "answerCards");
+    const storedFiles = assertArray(backup?.storedFiles ?? [], "storedFiles");
+    const weeklyPlan = backup?.weeklyPlan;
+    if (!weeklyPlan || typeof weeklyPlan !== "object") throw new Error("Backup field weeklyPlan must be an object");
+
+    db.exec("BEGIN");
+    try {
+      db.exec(`
+        DELETE FROM weekly_tasks;
+        DELETE FROM weekly_plans;
+        DELETE FROM qa_pairs;
+        DELETE FROM interview_source_files;
+        DELETE FROM interview_sessions;
+        DELETE FROM opportunity_timeline_events;
+        DELETE FROM opportunity_source_assets;
+        DELETE FROM opportunities;
+        DELETE FROM answer_cards;
+        DELETE FROM resume_versions;
+      `);
+
+      fs.rmSync(FILE_DIR, { recursive: true, force: true });
+      fs.mkdirSync(FILE_DIR, { recursive: true });
+      storedFiles.forEach((file) => {
+        const storedFileName = storageUriToFileName(file.storageUri) || sanitizeFileName(file.fileName);
+        if (!storedFileName || !file.dataBase64) return;
+        fs.writeFileSync(path.join(FILE_DIR, storedFileName), Buffer.from(String(file.dataBase64), "base64"));
+      });
+
+      const resumeIds = new Set(resumeVersions.map((resume) => resume.id).filter(Boolean));
+      resumeVersions.forEach((resume) => createResume(resume));
+
+      const opportunityIds = new Set(opportunities.map((opportunity) => opportunity.id).filter(Boolean));
+      opportunities.forEach((opportunity) =>
+        createOpportunity({
+          ...opportunity,
+          resumeId: resumeIds.has(opportunity.resumeId) ? opportunity.resumeId : "",
+        }),
+      );
+
+      interviewSessions.forEach((session) =>
+        createInterview({
+          ...session,
+          opportunityId: opportunityIds.has(session.opportunityId) ? session.opportunityId : undefined,
+        }),
+      );
+
+      answerCards.forEach((answer) => createAnswer(answer));
+
+      const timestamp = nowIso();
+      const planId = "WP-RESTORED";
+      db.prepare(`
+        INSERT INTO weekly_plans (
+          id, week_start, target_applications, focus_directions_json, focus_cities_json,
+          focus_companies_json, practice_themes_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        planId,
+        backup.weekStart || new Date().toISOString().slice(0, 10),
+        Number(weeklyPlan.targetApplications ?? 1) || 1,
+        JSON.stringify(assertArray(weeklyPlan.focusDirections ?? [], "weeklyPlan.focusDirections")),
+        JSON.stringify(assertArray(weeklyPlan.focusCities ?? [], "weeklyPlan.focusCities")),
+        JSON.stringify(assertArray(weeklyPlan.focusCompanies ?? [], "weeklyPlan.focusCompanies")),
+        JSON.stringify(assertArray(weeklyPlan.practiceThemes ?? [], "weeklyPlan.practiceThemes")),
+        timestamp,
+        timestamp,
+      );
+
+      assertArray(weeklyPlan.tasks ?? [], "weeklyPlan.tasks").forEach((task) => createWeeklyTask(task));
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return createBackup();
+  };
+
+  const saveFile = (input) => {
+    const dataBase64 = String(input?.dataBase64 ?? "");
+    if (!dataBase64) throw new Error("File payload is empty");
+    const fileName = sanitizeFileName(input.fileName);
+    const storedFileName = `${makeId("FILE")}-${fileName}`;
+    const filePath = path.join(FILE_DIR, storedFileName);
+    const buffer = Buffer.from(dataBase64, "base64");
+    fs.writeFileSync(filePath, buffer);
+    return {
+      storageUri: `/api/files/${encodeURIComponent(storedFileName)}`,
+      fileName,
+      fileSize: formatFileSize(buffer.length),
+      mimeType: input.mimeType || "application/octet-stream",
+    };
+  };
+
+  const getFilePath = (storedFileName) => {
+    const safeName = sanitizeFileName(decodeURIComponent(storedFileName));
+    const filePath = path.join(FILE_DIR, safeName);
+    return filePath.startsWith(FILE_DIR) && fs.existsSync(filePath) ? filePath : null;
   };
 
   return {
@@ -1223,6 +1653,7 @@ export const createRepository = (db) => {
     updateOpportunity,
     addOpportunityProgress,
     deleteOpportunity,
+    getOpportunityPipeline,
     listOpportunitySourceAssets,
     listOpportunityTimeline,
     listInterviews,
@@ -1237,6 +1668,7 @@ export const createRepository = (db) => {
     listAnswers,
     getAnswer,
     createAnswer,
+    createAnswerFromQaPair,
     updateAnswer,
     deleteAnswer,
     listResumes,
@@ -1253,5 +1685,9 @@ export const createRepository = (db) => {
     deleteWeeklyTask,
     getDashboardSummary,
     getTodayActions,
+    createBackup,
+    restoreBackup,
+    saveFile,
+    getFilePath,
   };
 };

@@ -154,7 +154,8 @@ button:disabled {
 .filter-bar button,
 .focus-grid button,
 .export-action,
-.action-row {
+.action-row,
+.action-row-main {
   border: 0;
   background: transparent;
   color: var(--text-secondary);
@@ -229,7 +230,7 @@ button:disabled {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -287,6 +288,59 @@ button:disabled {
 
 .search-box {
   min-height: 64px;
+}
+
+.api-mode-badge {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-visible);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.api-mode-badge strong,
+.api-mode-badge em {
+  font-family: "Space Mono", "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--text-display);
+}
+
+.api-mode-badge span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.api-mode-badge.online {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border-visible));
+}
+
+.api-mode-badge.offline {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border-visible));
+}
+
+.api-mode-badge.demo,
+.api-mode-badge.mock {
+  border-color: color-mix(in srgb, var(--interactive) 38%, var(--border-visible));
+}
+
+.mini-button {
+  min-height: 30px;
+  border: 1px solid var(--border-visible);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .page-grid {
@@ -640,6 +694,43 @@ h1 {
   color: var(--success);
 }
 
+.todo-rule-card {
+  display: grid;
+  gap: 14px;
+}
+
+.todo-rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.todo-rule-list button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: center;
+  min-height: 76px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.todo-rule-list button:hover {
+  border-color: var(--border-visible);
+}
+
+.todo-rule-list strong {
+  color: var(--text-display);
+  font-weight: 500;
+}
+
+.todo-rule-list small {
+  grid-column: 2;
+}
+
 .wide {
   grid-column: span 1;
 }
@@ -766,7 +857,7 @@ h1 {
 .action-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) 20px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   padding: 16px 0;
@@ -775,7 +866,18 @@ h1 {
   text-align: left;
 }
 
-.action-row span:nth-child(2),
+.action-row-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 20px;
+  gap: 14px;
+  align-items: center;
+  padding: 0;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.action-copy,
 .table-row span:first-child,
 .resume-row span,
 .export-action span {
@@ -1217,6 +1319,27 @@ small {
   color: var(--text-display);
 }
 
+.action-row strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-visible);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
 .signal-stack {
   display: grid;
   gap: 2px;
@@ -1542,6 +1665,7 @@ small {
 .inline-controls select,
 .weekly-target-row input,
 .weekly-task input,
+.weekly-task select,
 .tag-input-row input {
   min-height: 42px;
   border: 1px solid var(--border);
@@ -1664,7 +1788,8 @@ small {
 }
 
 .weekly-linkage span,
-.weekly-task > span {
+.weekly-task > span,
+.weekly-priority-field span {
   font-family: "Space Mono", monospace;
   color: var(--text-secondary);
   font-size: 11px;
@@ -1716,6 +1841,20 @@ small {
   outline: 0;
 }
 
+.weekly-priority-field {
+  display: grid;
+  gap: 6px;
+}
+
+.route-hint {
+  margin-top: -4px;
+  color: var(--interactive);
+}
+
+.action-complete-button {
+  white-space: nowrap;
+}
+
 .export-action {
   min-height: 120px;
   grid-template-columns: 24px minmax(0, 1fr) 20px;
@@ -1725,6 +1864,19 @@ small {
   color: var(--text-primary);
   text-align: left;
   background: var(--surface-raised);
+}
+
+.settings-panel {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-panel > p {
+  max-width: 760px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0 0 14px;
 }
 
 .back-button {
@@ -1981,6 +2133,22 @@ small {
 .composer-steps .active-step {
   background: var(--text-display);
   color: var(--black);
+}
+
+.composer-parse-notice {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--border-visible));
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  color: var(--text-primary);
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.composer-parse-notice.is-loading {
+  border-color: color-mix(in srgb, var(--interactive) 45%, var(--border-visible));
+  background: color-mix(in srgb, var(--interactive) 10%, var(--surface));
 }
 
 .composer-source-grid {

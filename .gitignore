@@ -7,8 +7,9 @@ dist/
 vite.config.js
 vite.config.d.ts
 
-.env.local
-.env.*.local
+.env
+.env.*
+!.env.demo
 
 server/data/
 *.sqlite

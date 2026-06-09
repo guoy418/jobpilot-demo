@@ -1,4 +1,18 @@
+import http from "node:http";
+
 const API_URL = process.env.API_URL || "http://127.0.0.1:8787";
+
+const withMockAiServer = async (handler, run) => {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Failed to start mock AI server");
+  try {
+    return await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+};
 
 const checks = [
   ["/api/health", (data) => data.ok === true],
@@ -7,8 +21,16 @@ const checks = [
   ["/api/answers", (data) => Array.isArray(data) && data.length >= 1],
   ["/api/resumes", (data) => Array.isArray(data) && data.length >= 1],
   ["/api/weekly-plan/current", (data) => data && typeof data.targetApplications === "number"],
-  ["/api/dashboard/summary", (data) => data && typeof data.opportunityCount === "number"],
-  ["/api/dashboard/today-actions", (data) => Array.isArray(data) && data.length >= 1],
+  ["/api/dashboard/summary", (data) => data && typeof data.opportunityCount === "number" && typeof data.pendingReviewCount === "number"],
+  [
+    "/api/dashboard/today-actions",
+    (data) =>
+      Array.isArray(data) &&
+      data.length >= 1 &&
+      data.every((action) => action.page && action.filter !== undefined && action.source && action.level) &&
+      data.every((action, index, actions) => index === 0 || ["P0", "P1", "P2", "P3"].indexOf(actions[index - 1].level) <= ["P0", "P1", "P2", "P3"].indexOf(action.level)),
+  ],
+  ["/api/backup", (data) => data && Array.isArray(data.opportunities) && Array.isArray(data.interviewSessions)],
 ];
 
 for (const [path, validate] of checks) {
@@ -22,6 +44,543 @@ for (const [path, validate] of checks) {
   }
   console.log(`PASS ${path}`);
 }
+
+const uploadedFile = await fetch(`${API_URL}/api/files`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    fileName: `api-check-${Date.now()}.txt`,
+    mimeType: "text/plain",
+    dataBase64: Buffer.from("JobPilot file check", "utf8").toString("base64"),
+  }),
+});
+if (!uploadedFile.ok) throw new Error(`POST /api/files returned ${uploadedFile.status}`);
+const uploadedFilePayload = await uploadedFile.json();
+if (!uploadedFilePayload.storageUri || !uploadedFilePayload.fileSize) {
+  throw new Error("POST /api/files returned unexpected payload");
+}
+console.log("PASS POST /api/files");
+
+const fetchedFile = await fetch(`${API_URL}${uploadedFilePayload.storageUri}`);
+if (!fetchedFile.ok) throw new Error(`GET /api/files/:id returned ${fetchedFile.status}`);
+if ((await fetchedFile.text()) !== "JobPilot file check") {
+  throw new Error("GET /api/files/:id returned unexpected content");
+}
+console.log("PASS GET /api/files/:id");
+
+const fileBackup = await fetch(`${API_URL}/api/backup`).then((response) => response.json());
+if (!Array.isArray(fileBackup.storedFiles) || !fileBackup.storedFiles.some((file) => file.storageUri === uploadedFilePayload.storageUri && file.dataBase64)) {
+  throw new Error("GET /api/backup did not include uploaded file content");
+}
+console.log("PASS GET /api/backup storedFiles");
+
+const restoredBackup = await fetch(`${API_URL}/api/backup`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(fileBackup),
+});
+if (!restoredBackup.ok) throw new Error(`POST /api/backup returned ${restoredBackup.status}`);
+const restoredFile = await fetch(`${API_URL}${uploadedFilePayload.storageUri}`);
+if (!restoredFile.ok || (await restoredFile.text()) !== "JobPilot file check") {
+  throw new Error("POST /api/backup did not restore file content");
+}
+console.log("PASS POST /api/backup restores files");
+
+const parsedOpportunity = await fetch(`${API_URL}/api/parse/opportunity`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "腾讯 前端开发实习生 上海 明天 React TypeScript",
+    fileName: "tencent-fe-jd.txt",
+    sourceKind: "jd-text",
+    note: "api check",
+  }),
+});
+if (!parsedOpportunity.ok) throw new Error(`POST /api/parse/opportunity returned ${parsedOpportunity.status}`);
+const parsedOpportunityPayload = await parsedOpportunity.json();
+if (parsedOpportunityPayload.company !== "腾讯" || !parsedOpportunityPayload.title.includes("前端")) {
+  throw new Error("POST /api/parse/opportunity returned unexpected payload");
+}
+console.log("PASS POST /api/parse/opportunity");
+
+const parsedInterview = await fetch(`${API_URL}/api/parse/interview`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "小红书 产品经理实习生 二面\n面试官：你负责过什么项目？\n我：我负责过 JobPilot MVP，推进岗位、面试和答案库闭环。",
+    fileName: "interview.md",
+    sourceKind: "transcript",
+    note: "api check",
+  }),
+});
+if (!parsedInterview.ok) throw new Error(`POST /api/parse/interview returned ${parsedInterview.status}`);
+const parsedInterviewPayload = await parsedInterview.json();
+if (parsedInterviewPayload.company !== "小红书" || parsedInterviewPayload.round !== "二面" || !Array.isArray(parsedInterviewPayload.qaPairs) || parsedInterviewPayload.qaPairs.length < 1) {
+  throw new Error("POST /api/parse/interview returned unexpected payload");
+}
+console.log("PASS POST /api/parse/interview");
+
+const parsedNaturalInterview = await fetch(`${API_URL}/api/parse/interview`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "面试官问你负责过什么项目？我回答负责 JobPilot。接着问遇到冲突怎么办？我说先对齐目标和约束。",
+    fileName: "natural-interview.md",
+    sourceKind: "transcript",
+  }),
+});
+if (!parsedNaturalInterview.ok) throw new Error(`POST /api/parse/interview natural transcript returned ${parsedNaturalInterview.status}`);
+const parsedNaturalInterviewPayload = await parsedNaturalInterview.json();
+if (!Array.isArray(parsedNaturalInterviewPayload.qaPairs) || parsedNaturalInterviewPayload.qaPairs.length < 2) {
+  throw new Error("POST /api/parse/interview did not split multiple natural-language questions");
+}
+console.log("PASS POST /api/parse/interview natural QA split");
+
+const parsedResume = await fetch(`${API_URL}/api/parse/resume`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "React TypeScript 前端 组件 性能优化",
+    fileName: "frontend-resume.pdf",
+    sourceKind: "resume-file",
+    note: "api check",
+  }),
+});
+if (!parsedResume.ok) throw new Error(`POST /api/parse/resume returned ${parsedResume.status}`);
+const parsedResumePayload = await parsedResume.json();
+if (!parsedResumePayload.title || !parsedResumePayload.roles.includes("前端")) {
+  throw new Error("POST /api/parse/resume returned unexpected payload");
+}
+console.log("PASS POST /api/parse/resume");
+
+const uploadedJdFile = await fetch(`${API_URL}/api/files`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    fileName: `api-check-jd-${Date.now()}.txt`,
+    mimeType: "text/plain",
+    dataBase64: Buffer.from("阿里 数据分析实习生 杭州 明天 SQL Python", "utf8").toString("base64"),
+  }),
+});
+if (!uploadedJdFile.ok) throw new Error(`POST /api/files for parse returned ${uploadedJdFile.status}`);
+const uploadedJdPayload = await uploadedJdFile.json();
+const parsedStoredJd = await fetch(`${API_URL}/api/parse/opportunity`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "",
+    fileName: uploadedJdPayload.fileName,
+    storageUri: uploadedJdPayload.storageUri,
+    sourceKind: "jd-text",
+    note: "api check stored text",
+  }),
+});
+if (!parsedStoredJd.ok) throw new Error(`POST /api/parse/opportunity stored text returned ${parsedStoredJd.status}`);
+const parsedStoredJdPayload = await parsedStoredJd.json();
+if (parsedStoredJdPayload.company !== "阿里" || !parsedStoredJdPayload.title.includes("数据")) {
+  throw new Error("POST /api/parse/opportunity did not read stored text content");
+}
+console.log("PASS POST /api/parse/opportunity stored text");
+
+const parsedWithBrokenAi = await fetch(`${API_URL}/api/parse/opportunity`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "美团 后端开发实习生 北京 明天 Java",
+    fileName: "meituan-backend-jd.txt",
+    sourceKind: "jd-text",
+    aiSettings: {
+      provider: "custom",
+      endpoint: "http://127.0.0.1:9/v1/chat/completions",
+      apiKey: "intentionally-invalid-api-check-key",
+      model: "test-model",
+    },
+  }),
+});
+if (!parsedWithBrokenAi.ok) throw new Error(`POST /api/parse/opportunity broken AI fallback returned ${parsedWithBrokenAi.status}`);
+const parsedWithBrokenAiPayload = await parsedWithBrokenAi.json();
+if (parsedWithBrokenAiPayload.company !== "美团" || !parsedWithBrokenAiPayload.title.includes("后端")) {
+  throw new Error("POST /api/parse/opportunity did not fallback after AI provider failure");
+}
+console.log("PASS POST /api/parse/opportunity AI fallback");
+
+await withMockAiServer(
+  async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("utf8");
+    if (body.includes("面试逐字稿")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  company: "小红书",
+                  role: "产品经理实习生",
+                  round: "二面",
+                  date: "Today",
+                  qaPairs: [
+                    {
+                      question: "介绍一个你推进过的项目。",
+                      originalAnswer: "我做了 JobPilot。",
+                      type: "PROJECT",
+                    },
+                    {
+                      question: "如果用户不按流程上传材料怎么办？",
+                      originalAnswer: "我会增加状态提示。",
+                      type: "PRODUCT",
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    if (!body.includes("原问题")) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "expected interview parse prompt" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                question: body.includes("不按流程上传材料") ? "如果用户不按流程上传材料怎么办？" : "介绍一个你推进过的项目。",
+                originalAnswer: body.includes("不按流程上传材料") ? "我会增加状态提示。" : "我做了 JobPilot。",
+                type: body.includes("不按流程上传材料") ? "PRODUCT" : "PROJECT",
+                score: body.includes("不按流程上传材料") ? 3 : 2,
+                critique: body.includes("不按流程上传材料")
+                  ? "方向正确，但缺少对异常路径的分层，例如文件未上传、模型未配置、解析失败和用户只想粘贴文字的不同处理。"
+                  : "回答过短，只说明做过项目，没有交代用户痛点、目标、个人职责、关键取舍和结果指标。",
+                weak: true,
+                framework: body.includes("不按流程上传材料")
+                  ? "先把异常路径按用户当前目标拆开；再说明每类异常给什么最小可恢复动作；接着强调反馈要出现在当前弹窗而不是隐藏在系统状态里；最后说明这样能保护数据质量，避免失败结果被写入正式记录。"
+                  : "先说明 JobPilot 解决的真实求职管理痛点；再讲自己负责的核心闭环和个人职责；接着展开关键取舍，例如先做持久化和任务联动，再接入 OCR 与 AI 复盘；最后用结果和后续评测计划收束。",
+                optimizedAnswer: body.includes("不按流程上传材料")
+                  ? "我会先把异常路径拆开：没有文件、文件只在浏览器、API 未连接、模型未配置、模型调用失败。每种情况都给用户一个最小可恢复动作，例如等待文件保存、改用粘贴文字、切换 Assist 或检查 endpoint。界面上不只在侧边栏显示状态，而是在当前弹窗里给明确错误和下一步建议。这样用户不会觉得按钮没反应，同时也能避免把失败的 AI 输出直接写成正式记录。"
+                  : "我推进的是 JobPilot，一个面向个人求职管理的本地优先工具。背景是岗位、面试复盘和答案库分散，用户很难形成每日行动。我先把核心目标定为打通岗位录入、面试复盘和今日待办闭环，负责梳理数据模型、解析入口和任务联动。过程中我没有一开始追求完整 AI，而是先保证本地持久化和可回滚，再逐步接入 OCR、文字解析和复盘生成。结果是用户可以从真实 JD 或文字稿生成可确认的记录，并在今日待办里看到下一步动作。复盘来看，后续我会补更明确的解析失败反馈和真实样本评测。",
+              }),
+            },
+          },
+        ],
+      }),
+    );
+  },
+  async (mockAiBaseUrl) => {
+    const parsedAiInterview = await fetch(`${API_URL}/api/parse/interview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawText: "面试官：介绍一个你推进过的项目。我：我做了 JobPilot。面试官：如果用户不按流程上传材料怎么办？我：我会增加状态提示。",
+        fileName: "ai-interview.md",
+        sourceKind: "transcript",
+        aiSettings: {
+          provider: "custom",
+          endpoint: `${mockAiBaseUrl}/v1`,
+          apiKey: "mock-ai-key",
+          model: "mock-review-model",
+        },
+      }),
+    });
+    if (!parsedAiInterview.ok) throw new Error(`POST /api/parse/interview AI review returned ${parsedAiInterview.status}`);
+    const parsedAiInterviewPayload = await parsedAiInterview.json();
+    if (
+      !Array.isArray(parsedAiInterviewPayload.qaPairs) ||
+      parsedAiInterviewPayload.qaPairs.length < 2 ||
+      parsedAiInterviewPayload.qaPairs[0].critique.length < 20 ||
+      parsedAiInterviewPayload.qaPairs[0].optimizedAnswer.length < 20
+    ) {
+      throw new Error("POST /api/parse/interview did not use AI generated review qaPairs");
+    }
+    console.log("PASS POST /api/parse/interview AI review qaPairs");
+  },
+);
+
+await withMockAiServer(
+  async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("utf8");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (body.includes("上一轮单题复盘输出不是 JSON")) {
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  question: "讲一次你主动发现并解决问题的经历",
+                  originalAnswer: "我提到了自己做过 JobPilot，但展开不足。",
+                  type: "BEHAVIORAL",
+                  score: 3,
+                  critique: "回答有项目方向，但缺少背景、关键动作、结果指标和复盘。",
+                  weak: true,
+                  framework:
+                    "先说明问题出现的真实业务场景和影响面；再讲自己如何记录、分类、下钻分析并找到共性原因；接着说明如何推动相关方落地，包括沟通、取舍和优先级；最后用结果指标和个人复盘收束。",
+                  optimizedAnswer:
+                    "我可以讲 JobPilot 这个项目。最开始我发现自己的求职材料、岗位状态、面试复盘和答案练习分散在不同地方，很难形成稳定的行动闭环。所以我把目标定为做一个本地优先的求职管理工具，先打通岗位录入、面试复盘、答案库和今日待办。\n\n在推进过程中，我不是一开始追求完整功能，而是先保证真实数据可以落地，包括 SQLite 持久化、文件上传、JD/文字稿解析和任务联动。之后再逐步接入 OCR 和 AI 面试复盘，让系统能从真实材料里生成可确认的记录。\n\n这个经历让我最大的收获是，产品不只是把功能做出来，而是要围绕用户的真实流程，把信息输入、结构化、复盘和下一步行动连起来。",
+                }),
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "用户要求我作为面试复盘助手，根据提供的面试文字稿，直接输出一个 JSON 对象，不要 markdown，不要代码块。",
+            },
+          },
+        ],
+      }),
+    );
+  },
+  async (mockAiBaseUrl) => {
+    const parsedRepairedAiInterview = await fetch(`${API_URL}/api/parse/interview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawText: "面试官：讲一个你主动解决问题的经历。我：我做过 JobPilot。",
+        fileName: "repair-ai-review.md",
+        sourceKind: "transcript",
+        aiSettings: {
+          provider: "custom",
+          endpoint: `${mockAiBaseUrl}/v1`,
+          apiKey: "mock-ai-key",
+          model: "mock-review-model",
+        },
+      }),
+    });
+    if (!parsedRepairedAiInterview.ok) throw new Error(`POST /api/parse/interview repaired AI review returned ${parsedRepairedAiInterview.status}`);
+    const payload = await parsedRepairedAiInterview.json();
+    if (payload.extractionStatus !== "ai-review" || !payload.qaPairs?.[0]?.framework.includes("业务场景")) {
+      throw new Error("POST /api/parse/interview should repair non-JSON AI response");
+    }
+    console.log("PASS POST /api/parse/interview repairs non-JSON AI response");
+  },
+);
+
+await withMockAiServer(
+  async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("utf8");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (body.includes("empty-ai-review")) {
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  company: "小红书",
+                  role: "产品经理实习生",
+                  round: "二面",
+                  sourceText: "面试官问你做过什么项目？我回答 JobPilot。",
+                  qaPairs: [],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    if (body.includes("原问题")) {
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  question: "你负责过什么项目？",
+                  originalAnswer: "我负责 JobPilot MVP，打通岗位、面试和答案库。",
+                  type: "PROJECT",
+                  score: 3,
+                  critique: "回答说明了项目方向，但还需要补充个人职责、关键动作和结果指标。",
+                  weak: true,
+                  framework: "先说明 JobPilot 解决的求职管理痛点；再讲自己负责岗位、面试和答案库闭环；接着展开关键动作和取舍；最后用结果、限制和下一步优化收束。",
+                  optimizedAnswer: "我负责 JobPilot MVP 的核心闭环，从岗位录入、面试复盘到答案库沉淀，重点解决求职材料分散和行动不可追踪的问题。",
+                }),
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "{}",
+            },
+          },
+        ],
+      }),
+    );
+  },
+  async (mockAiBaseUrl) => {
+    const parsedEmptyAiReview = await fetch(`${API_URL}/api/parse/interview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawText: "面试官问你做过什么项目？我回答 JobPilot。",
+        fileName: "empty-ai-review.md",
+        sourceKind: "transcript",
+        aiSettings: {
+          provider: "custom",
+          endpoint: `${mockAiBaseUrl}/v1`,
+          apiKey: "mock-ai-key",
+          model: "mock-review-model",
+        },
+      }),
+    });
+    if (!parsedEmptyAiReview.ok) throw new Error(`POST /api/parse/interview empty AI review returned ${parsedEmptyAiReview.status}`);
+    const parsedEmptyAiReviewPayload = await parsedEmptyAiReview.json();
+    if (parsedEmptyAiReviewPayload.extractionStatus !== "ai-review-empty" || parsedEmptyAiReviewPayload.qaPairs.length !== 0) {
+      throw new Error("POST /api/parse/interview empty AI review should not fallback to local qaPairs");
+    }
+    console.log("PASS POST /api/parse/interview empty AI review blocked");
+  },
+);
+
+await withMockAiServer(
+  async (req, res) => {
+    if (req.url?.endsWith("/audio/transcriptions")) {
+      for await (const _chunk of req) {
+        // Drain multipart body before responding.
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          text: "小红书 产品经理实习生 二面\n面试官：你负责过什么项目？\n我：我负责 JobPilot MVP，打通岗位、面试和答案库。",
+        }),
+      );
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("utf8");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (body.includes("原问题")) {
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  question: "你负责过什么项目？",
+                  originalAnswer: "我负责 JobPilot MVP，打通岗位、面试和答案库。",
+                  type: "PROJECT",
+                  score: 3,
+                  critique: "回答说明了项目方向，但还需要补充个人职责、关键动作和结果指标。",
+                  weak: true,
+                  framework: "先说明 JobPilot 解决的求职管理痛点；再讲自己负责岗位、面试和答案库闭环；接着展开关键动作和取舍；最后用结果、限制和下一步优化收束。",
+                  optimizedAnswer: "我负责 JobPilot MVP 的核心闭环，从岗位录入、面试复盘到答案库沉淀，重点解决求职材料分散和行动不可追踪的问题。",
+                }),
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: "腾讯 前端开发实习生 上海 明天 React TypeScript",
+            },
+          },
+        ],
+      }),
+    );
+  },
+  async (mockAiBaseUrl) => {
+    const uploadedImage = await fetch(`${API_URL}/api/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: `api-check-jd-screenshot-${Date.now()}.png`,
+        mimeType: "image/png",
+        dataBase64: Buffer.from("fake image bytes", "utf8").toString("base64"),
+      }),
+    });
+    if (!uploadedImage.ok) throw new Error(`POST /api/files image returned ${uploadedImage.status}`);
+    const uploadedImagePayload = await uploadedImage.json();
+    const parsedImage = await fetch(`${API_URL}/api/parse/opportunity`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawText: "",
+        fileName: uploadedImagePayload.fileName,
+        storageUri: uploadedImagePayload.storageUri,
+        sourceKind: "screenshot",
+        aiSettings: {
+          provider: "custom",
+          endpoint: `${mockAiBaseUrl}/v1`,
+          apiKey: "mock-ai-key",
+          model: "mock-vision-model",
+        },
+      }),
+    });
+    if (!parsedImage.ok) throw new Error(`POST /api/parse/opportunity OCR returned ${parsedImage.status}`);
+    const parsedImagePayload = await parsedImage.json();
+    if (parsedImagePayload.extractionStatus !== "ai-ocr" || parsedImagePayload.company !== "腾讯") {
+      throw new Error("POST /api/parse/opportunity did not OCR stored screenshot through provider");
+    }
+    console.log("PASS POST /api/parse/opportunity OCR provider");
+
+    const uploadedAudio = await fetch(`${API_URL}/api/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: `api-check-interview-${Date.now()}.m4a`,
+        mimeType: "audio/mp4",
+        dataBase64: Buffer.from("fake audio bytes", "utf8").toString("base64"),
+      }),
+    });
+    if (!uploadedAudio.ok) throw new Error(`POST /api/files audio returned ${uploadedAudio.status}`);
+    const uploadedAudioPayload = await uploadedAudio.json();
+    const parsedAudio = await fetch(`${API_URL}/api/parse/interview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawText: "",
+        fileName: uploadedAudioPayload.fileName,
+        storageUri: uploadedAudioPayload.storageUri,
+        sourceKind: "audio",
+        aiSettings: {
+          provider: "custom",
+          endpoint: `${mockAiBaseUrl}/v1`,
+          apiKey: "mock-ai-key",
+          model: "mock-chat-model",
+        },
+      }),
+    });
+    if (!parsedAudio.ok) throw new Error(`POST /api/parse/interview transcription returned ${parsedAudio.status}`);
+    const parsedAudioPayload = await parsedAudio.json();
+    if (!["ai-transcription", "ai-review"].includes(parsedAudioPayload.extractionStatus) || !Array.isArray(parsedAudioPayload.qaPairs) || parsedAudioPayload.qaPairs.length < 1) {
+      throw new Error(`POST /api/parse/interview did not transcribe stored audio through provider: ${JSON.stringify(parsedAudioPayload).slice(0, 500)}`);
+    }
+    console.log("PASS POST /api/parse/interview transcription provider");
+  },
+);
 
 const existingResumes = await fetch(`${API_URL}/api/resumes`).then((response) => response.json());
 const tempOpportunity = {
@@ -91,6 +650,14 @@ if (!Array.isArray(fetchedTimelinePayload) || fetchedTimelinePayload.length !== 
 }
 console.log("PASS GET /api/opportunities/:id/timeline");
 
+const fetchedPipeline = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/pipeline`);
+if (!fetchedPipeline.ok) throw new Error(`GET /api/opportunities/:id/pipeline returned ${fetchedPipeline.status}`);
+const fetchedPipelinePayload = await fetchedPipeline.json();
+if (!Array.isArray(fetchedPipelinePayload) || fetchedPipelinePayload.length !== 6 || !fetchedPipelinePayload.some((stage) => stage.state === "current")) {
+  throw new Error("GET /api/opportunities/:id/pipeline returned unexpected payload");
+}
+console.log("PASS GET /api/opportunities/:id/pipeline");
+
 const updatedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
@@ -122,8 +689,42 @@ if (progressedOpportunityPayload.status !== "APPLIED" || progressedOpportunityPa
 }
 console.log("PASS POST /api/opportunities/:id/progress");
 
+const weeklyPlanAfterProgress = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
+const followupTasksAfterProgress = weeklyPlanAfterProgress.tasks.filter(
+  (task) => task.source === "opportunity" && task.relatedEntityId === tempOpportunity.id,
+);
+if (followupTasksAfterProgress.length !== 1) {
+  throw new Error("POST /api/opportunities/:id/progress did not create one opportunity follow-up task");
+}
+
+const repeatedProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "APPLIED",
+    timelineEvent: {
+      title: "API check repeated applied",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!repeatedProgress.ok) throw new Error(`repeated POST /api/opportunities/:id/progress returned ${repeatedProgress.status}`);
+const weeklyPlanAfterRepeatedProgress = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
+const followupTasksAfterRepeatedProgress = weeklyPlanAfterRepeatedProgress.tasks.filter(
+  (task) => task.source === "opportunity" && task.relatedEntityId === tempOpportunity.id,
+);
+if (followupTasksAfterRepeatedProgress.length !== 1) {
+  throw new Error("POST /api/opportunities/:id/progress created duplicate opportunity follow-up tasks");
+}
+console.log("PASS POST /api/opportunities/:id/progress follow-up task");
+
 const deletedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, { method: "DELETE" });
 if (!deletedOpportunity.ok) throw new Error(`DELETE /api/opportunities/:id returned ${deletedOpportunity.status}`);
+const weeklyPlanAfterOpportunityDelete = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
+if (weeklyPlanAfterOpportunityDelete.tasks.some((task) => task.source === "opportunity" && task.relatedEntityId === tempOpportunity.id)) {
+  throw new Error("DELETE /api/opportunities/:id did not remove opportunity follow-up tasks");
+}
 console.log("PASS DELETE /api/opportunities/:id");
 
 const tempAnswer = {
@@ -151,15 +752,44 @@ console.log("PASS POST /api/answers");
 const updated = await fetch(`${API_URL}/api/answers/${encodeURIComponent(tempAnswer.id)}`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ practiceStatus: "练习中" }),
+  body: JSON.stringify({ practiceStatus: "练习中", status: "NEEDS PRACTICE" }),
 });
 if (!updated.ok) throw new Error(`PATCH /api/answers/:id returned ${updated.status}`);
 const updatedAnswer = await updated.json();
-if (updatedAnswer.practiceStatus !== "练习中") throw new Error("PATCH /api/answers/:id did not update practiceStatus");
+if (updatedAnswer.practiceStatus !== "练习中" || updatedAnswer.status !== "NEEDS PRACTICE") {
+  throw new Error("PATCH /api/answers/:id did not update practice state");
+}
 console.log("PASS PATCH /api/answers/:id");
+
+const answerTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (!answerTodayActions.some((action) => action.source === "answer" && action.targetId === tempAnswer.id && action.page === "answers")) {
+  throw new Error("/api/dashboard/today-actions did not include direct answer practice action");
+}
+console.log("PASS answer-derived today action");
+
+const answerLinkedTask = {
+  id: `WT-CHECK-ANSWER-${Date.now()}`,
+  title: "API check answer-linked task",
+  detail: "temporary",
+  source: "answer",
+  sourceLabel: "api:check",
+  relatedEntityId: tempAnswer.id,
+  level: "P2",
+  status: "open",
+};
+const createdAnswerLinkedTask = await fetch(`${API_URL}/api/weekly-plan/current/tasks`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(answerLinkedTask),
+});
+if (!createdAnswerLinkedTask.ok) throw new Error(`POST answer-linked weekly task returned ${createdAnswerLinkedTask.status}`);
 
 const deleted = await fetch(`${API_URL}/api/answers/${encodeURIComponent(tempAnswer.id)}`, { method: "DELETE" });
 if (!deleted.ok) throw new Error(`DELETE /api/answers/:id returned ${deleted.status}`);
+const weeklyPlanAfterAnswerDelete = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
+if (weeklyPlanAfterAnswerDelete.tasks.some((task) => task.source === "answer" && task.relatedEntityId === tempAnswer.id)) {
+  throw new Error("DELETE /api/answers/:id did not remove answer-linked training tasks");
+}
 console.log("PASS DELETE /api/answers/:id");
 
 const originalWeeklyPlan = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
@@ -196,6 +826,7 @@ const tempTask = {
   detail: "temporary",
   source: "manual",
   sourceLabel: "api:check",
+  level: "P1",
   status: "open",
 };
 
@@ -206,17 +837,17 @@ const createdTask = await fetch(`${API_URL}/api/weekly-plan/current/tasks`, {
 });
 if (!createdTask.ok) throw new Error(`POST /api/weekly-plan/current/tasks returned ${createdTask.status}`);
 const createdWeeklyTask = await createdTask.json();
-if (createdWeeklyTask.id !== tempTask.id) throw new Error("POST /api/weekly-plan/current/tasks returned unexpected task");
+if (createdWeeklyTask.id !== tempTask.id || createdWeeklyTask.level !== "P1") throw new Error("POST /api/weekly-plan/current/tasks returned unexpected task");
 console.log("PASS POST /api/weekly-plan/current/tasks");
 
 const updatedTask = await fetch(`${API_URL}/api/weekly-tasks/${encodeURIComponent(tempTask.id)}`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ status: "done" }),
+  body: JSON.stringify({ status: "done", level: "P0" }),
 });
 if (!updatedTask.ok) throw new Error(`PATCH /api/weekly-tasks/:id returned ${updatedTask.status}`);
 const updatedWeeklyTask = await updatedTask.json();
-if (updatedWeeklyTask.status !== "done") throw new Error("PATCH /api/weekly-tasks/:id did not update status");
+if (updatedWeeklyTask.status !== "done" || updatedWeeklyTask.level !== "P0") throw new Error("PATCH /api/weekly-tasks/:id did not update status/level");
 console.log("PASS PATCH /api/weekly-tasks/:id");
 
 const deletedTask = await fetch(`${API_URL}/api/weekly-tasks/${encodeURIComponent(tempTask.id)}`, { method: "DELETE" });
@@ -347,6 +978,28 @@ const createdQaPayload = await createdQa.json();
 if (createdQaPayload.id !== extraQa.id) throw new Error("POST /api/interviews/:id/qa returned unexpected QA pair");
 console.log("PASS POST /api/interviews/:id/qa");
 
+const answerFromQa = await fetch(`${API_URL}/api/qa-pairs/${encodeURIComponent(extraQa.id)}/create-answer-card`, {
+  method: "POST",
+});
+if (!answerFromQa.ok) throw new Error(`POST /api/qa-pairs/:id/create-answer-card returned ${answerFromQa.status}`);
+const answerFromQaPayload = await answerFromQa.json();
+if (
+  answerFromQaPayload.question !== extraQa.question ||
+  answerFromQaPayload.sourceQaPairId !== extraQa.id ||
+  answerFromQaPayload.status !== "NEEDS PRACTICE"
+) {
+  throw new Error("POST /api/qa-pairs/:id/create-answer-card returned unexpected answer card");
+}
+const repeatedAnswerFromQa = await fetch(`${API_URL}/api/qa-pairs/${encodeURIComponent(extraQa.id)}/create-answer-card`, {
+  method: "POST",
+});
+if (!repeatedAnswerFromQa.ok) throw new Error(`repeated POST /api/qa-pairs/:id/create-answer-card returned ${repeatedAnswerFromQa.status}`);
+const repeatedAnswerFromQaPayload = await repeatedAnswerFromQa.json();
+if (repeatedAnswerFromQaPayload.id !== answerFromQaPayload.id) {
+  throw new Error("POST /api/qa-pairs/:id/create-answer-card did not dedupe by source QA");
+}
+console.log("PASS POST /api/qa-pairs/:id/create-answer-card");
+
 const updatedQa = await fetch(`${API_URL}/api/qa-pairs/${encodeURIComponent(extraQa.id)}`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
@@ -357,12 +1010,33 @@ const updatedQaPayload = await updatedQa.json();
 if (updatedQaPayload.weak !== false || updatedQaPayload.critique !== "updated") throw new Error("PATCH /api/qa-pairs/:id did not update QA pair");
 console.log("PASS PATCH /api/qa-pairs/:id");
 
+const interviewLinkedTask = {
+  id: `WT-CHECK-INTERVIEW-${Date.now()}`,
+  title: "API check interview-linked task",
+  detail: "temporary",
+  source: "interview",
+  sourceLabel: "api:check",
+  relatedEntityId: tempInterview.id,
+  level: "P2",
+  status: "open",
+};
+const createdInterviewLinkedTask = await fetch(`${API_URL}/api/weekly-plan/current/tasks`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(interviewLinkedTask),
+});
+if (!createdInterviewLinkedTask.ok) throw new Error(`POST interview-linked weekly task returned ${createdInterviewLinkedTask.status}`);
+
 const deletedQa = await fetch(`${API_URL}/api/qa-pairs/${encodeURIComponent(extraQa.id)}`, { method: "DELETE" });
 if (!deletedQa.ok) throw new Error(`DELETE /api/qa-pairs/:id returned ${deletedQa.status}`);
 console.log("PASS DELETE /api/qa-pairs/:id");
 
 const deletedInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(tempInterview.id)}`, { method: "DELETE" });
 if (!deletedInterview.ok) throw new Error(`DELETE /api/interviews/:id returned ${deletedInterview.status}`);
+const weeklyPlanAfterInterviewDelete = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
+if (weeklyPlanAfterInterviewDelete.tasks.some((task) => task.source === "interview" && task.relatedEntityId === tempInterview.id)) {
+  throw new Error("DELETE /api/interviews/:id did not remove interview-linked training tasks");
+}
 console.log("PASS DELETE /api/interviews/:id");
 
 console.log(`API check passed: ${API_URL}`);

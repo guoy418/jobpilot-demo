@@ -141,7 +141,7 @@ const chromePath =
   await check("resume two-step upload works", async () => {
     await page.getByRole("button", { name: /简历版本/ }).click();
     await page.getByRole("button", { name: /上传简历版本/ }).click();
-    const tmp = path.join(os.tmpdir(), "jobpilot-product-strategy-v8.pdf");
+    const tmp = path.join(os.tmpdir(), "jobpilot-product-strategy-v8.txt");
     fs.writeFileSync(tmp, "mock resume content for JobPilot v0.7 audit");
     await page.locator('.upload-dropzone input[type="file"]').setInputFiles(tmp);
     await page.locator(".source-side input").fill("产品策略版简历");

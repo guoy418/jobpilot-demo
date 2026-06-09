@@ -1,5 +1,5 @@
-import { submittedStatuses } from "./domain";
-import type { InterviewSession, Opportunity, OpportunityAction, Page, ResumeVersion, WeeklyPlan } from "./types";
+import { computeOpportunityAction, submittedStatuses } from "./domain";
+import type { AnswerCard, InterviewSession, Opportunity, OpportunityAction, Page, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
 export type TodayAction = {
   level: OpportunityAction;
@@ -7,7 +7,9 @@ export type TodayAction = {
   detail: string;
   page: Page;
   filter: string;
+  source: "opportunity" | "interview" | "answer" | "weekly";
   targetId?: string;
+  taskId?: string;
 };
 
 export type DashboardSummary = {
@@ -25,18 +27,31 @@ export type DashboardSummary = {
 export const selectResumeName = (resumeList: ResumeVersion[], resumeId: string) =>
   resumeList.find((resume) => resume.id === resumeId)?.name ?? "未选择简历";
 
+const priorityOrder: Record<OpportunityAction, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+
+export const sortTodayActions = (actions: TodayAction[]): TodayAction[] =>
+  [...actions].sort((left, right) => priorityOrder[left.level] - priorityOrder[right.level]);
+
+const weeklyActionRoute = (task: WeeklyTask): Pick<TodayAction, "page" | "targetId" | "taskId"> => {
+  if (task.source === "interview" && task.relatedEntityId) return { page: "interviews", targetId: task.relatedEntityId, taskId: task.id };
+  if (task.source === "opportunity" && task.relatedEntityId) return { page: "opportunityDetail", targetId: task.relatedEntityId, taskId: task.id };
+  if (task.source === "answer" && task.relatedEntityId) return { page: "answers", targetId: task.relatedEntityId, taskId: task.id };
+  return { page: "weekly", targetId: task.id, taskId: task.id };
+};
+
 export const selectDashboardSummary = (
   opportunities: Opportunity[],
   interviewSessions: InterviewSession[],
   weeklyPlan: WeeklyPlan,
 ): DashboardSummary => {
+  const opportunityActions = opportunities.map(computeOpportunityAction);
   const submittedApplications = opportunities.filter((item) => submittedStatuses.includes(item.status)).length;
-  const urgentCount = opportunities.filter((item) => item.action === "P0" || item.action === "P1").length;
+  const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
   const pendingReviewCount = interviewSessions.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
   const toApplyCount = opportunities.filter((item) => item.status === "TO APPLY").length;
   const inProgressCount = opportunities.filter((item) => item.status !== "TO APPLY" && item.status !== "OFFER").length;
-  const p0Count = opportunities.filter((item) => item.action === "P0").length;
-  const p1Count = opportunities.filter((item) => item.action === "P1").length;
+  const p0Count = opportunityActions.filter((action) => action === "P0").length;
+  const p1Count = opportunityActions.filter((action) => action === "P1").length;
   const weakInterviewCount = interviewSessions.filter((item) => item.qaPairs.some((pair) => pair.weak)).length;
   const applicationGap = Math.max(0, weeklyPlan.targetApplications - submittedApplications);
 
@@ -56,13 +71,14 @@ export const selectDashboardSummary = (
 export const selectTodayActions = (
   opportunities: Opportunity[],
   interviewSessions: InterviewSession[],
+  answerCards: AnswerCard[],
   weeklyPlan: WeeklyPlan,
   resumeList: ResumeVersion[],
 ): TodayAction[] => {
   const opportunityActionItems: TodayAction[] = opportunities
     .filter((item) => item.status !== "OFFER")
     .map((item) => ({
-      level: item.action,
+      level: computeOpportunityAction(item),
       title:
         item.status === "TO APPLY"
           ? `投递${item.company}${item.title}`
@@ -73,7 +89,8 @@ export const selectTodayActions = (
               : `跟进${item.company}${item.title}`,
       detail: `${item.nextAction} / 使用 ${selectResumeName(resumeList, item.resumeId)}`,
       page: "opportunityDetail",
-      filter: item.action,
+      filter: computeOpportunityAction(item),
+      source: "opportunity",
       targetId: item.id,
     }));
 
@@ -85,22 +102,40 @@ export const selectTodayActions = (
       detail: `${session.qaPairs.filter((pair) => pair.weak).length} 个薄弱回答需要处理`,
       page: "interviews",
       filter: "",
+      source: "interview",
       targetId: session.id,
     }));
 
   const weeklyActionItems: TodayAction[] = weeklyPlan.tasks
     .filter((task) => task.status === "open")
     .map((task) => ({
-      level: "P2",
+      level: task.level ?? "P2",
       title: task.title,
       detail: `${task.sourceLabel}: ${task.detail}`,
-      page: "weekly",
       filter: "",
-      targetId: task.id,
+      source: "weekly",
+      ...weeklyActionRoute(task),
     }));
 
-  const rawTodayActions = [...opportunityActionItems, ...interviewActionItems, ...weeklyActionItems];
-  return rawTodayActions.filter(
-    (action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index,
+  const openAnswerTaskIds = new Set(
+    weeklyPlan.tasks
+      .filter((task) => task.status === "open" && task.source === "answer" && task.relatedEntityId)
+      .map((task) => task.relatedEntityId),
   );
+  const answerActionItems: TodayAction[] = answerCards
+    .filter((card) => card.status === "NEEDS PRACTICE" && !openAnswerTaskIds.has(card.id))
+    .map((card) => ({
+      level: "P2",
+      title: `练习答案：${card.question}`,
+      detail: `${card.source}: ${card.practiceStatus} / 适用 ${card.relatedRoles || "待补充岗位"}`,
+      page: "answers",
+      filter: "",
+      source: "answer",
+      targetId: card.id,
+    }));
+
+  const rawTodayActions = [...opportunityActionItems, ...interviewActionItems, ...answerActionItems, ...weeklyActionItems];
+  return sortTodayActions(rawTodayActions.filter(
+    (action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index,
+  ));
 };

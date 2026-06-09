@@ -1,6 +1,6 @@
 # JobPilot v0.7 Backend Contract Draft
 
-Date: 2026-06-02
+Date: 2026-06-09 (updated from 2026-06-02 draft)
 
 This document is the backend handoff contract for the current v0.7 frontend prototype. It is derived from:
 
@@ -61,6 +61,7 @@ CREATE TABLE opportunities (
   action TEXT NOT NULL,
   city TEXT NOT NULL,
   deadline TEXT NOT NULL,
+  due_date TEXT,
   resume_id TEXT,
   next_action TEXT NOT NULL,
   jd_summary TEXT NOT NULL,
@@ -77,7 +78,7 @@ Rules:
 - Creating a linked interview should advance the opportunity to `INTERVIEWING`.
 - Marking applied should set:
   - `status = "APPLIED"`
-  - `action = "P1"`
+  - `action` from the shared priority computation
   - `next_action = "三天后跟进投递结果"`
   - append a timeline event
 
@@ -93,6 +94,7 @@ CREATE TABLE opportunity_source_assets (
   title TEXT NOT NULL,
   detail TEXT NOT NULL,
   content TEXT,
+  storage_uri TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
 );
@@ -158,6 +160,7 @@ CREATE TABLE interview_source_files (
   detail TEXT NOT NULL,
   uploaded_at TEXT NOT NULL,
   duration TEXT,
+  content TEXT,
   storage_uri TEXT,
   FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE CASCADE
 );
@@ -167,6 +170,12 @@ Allowed `kind` values:
 
 - `audio`
 - `transcript`
+
+Rules:
+
+- `content` stores extracted or pasted transcript text when available so the app can preview it without re-reading the file.
+- `storage_uri` points to the original uploaded file when it was saved through `/api/files`.
+- Audio source files may have no `content`; generated transcript source files should include `content` when transcription or pasted transcript text is available.
 
 ### `qa_pairs`
 
@@ -281,6 +290,7 @@ CREATE TABLE weekly_tasks (
   source TEXT NOT NULL,
   source_label TEXT NOT NULL,
   related_entity_id TEXT,
+  level TEXT NOT NULL DEFAULT 'P2',
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -312,8 +322,11 @@ type TodayActionDto = {
   level: "P0" | "P1" | "P2" | "P3";
   title: string;
   detail: string;
+  page: "opportunityDetail" | "interviews" | "weekly" | "answers";
   targetPage: "opportunityDetail" | "interviews" | "weekly" | "answers";
+  source: "opportunity" | "interview" | "weekly";
   targetId?: string;
+  taskId?: string;
 };
 ```
 
@@ -477,6 +490,27 @@ GET /api/dashboard/summary
 
 AI output should be validated before creating records. Do not write raw AI output directly into formal tables.
 
+All parse endpoints may return:
+
+```json
+{
+  "extractionStatus": "local-text",
+  "extractionError": "",
+  "aiStatus": "used",
+  "aiError": ""
+}
+```
+
+Common `extractionStatus` values:
+
+- Local success: `local-text`, `local-pdf-text`, `local-docx-text`
+- Assist success: `ai-review`, `ai-ocr`, `ai-transcription`
+- Assist/config failure: `ai-not-configured`, `ocr-unavailable`, `transcription-unavailable`, `ocr-provider-failed`, `transcription-provider-failed`, `transcription-provider-unsupported`
+- Interview Assist failure: `ai-parser-failed`, `ai-parser-invalid-json`, `ai-review-empty`
+- File failure: `stored-file-missing`, `empty-pdf-text`, `empty-docx-text`, `unsupported-file-type`, `file-extraction-failed`
+
+Frontend rule: when `extractionStatus` is in the failure set, do not advance composer to review.
+
 ### Parse Opportunity Source
 
 ```json
@@ -532,6 +566,33 @@ Required before create:
 - `round`
 - at least one `qaPair`
 
+Interview Assist implementation notes:
+
+1. Stage 1 extracts `qaPairs[]` with `question`, `originalAnswer`, `type` from the full transcript.
+2. Stage 2 generates `score`, `critique`, `weak`, `framework`, `optimizedAnswer` per pair.
+3. If stage 1 AI fails, backend may use local transcript splitting to get candidate pairs, then still attempt stage 2.
+4. If Assist review ultimately fails, return `ai-review-empty` or `ai-parser-failed`; do not silently substitute old deterministic critique/framework text.
+5. Output sanitization removes legacy label prefixes such as `问题簇` or `考察点` if the model emits them.
+
+Request body may include:
+
+```json
+{
+  "rawText": "完整转写稿",
+  "fileName": "interview-transcript.docx",
+  "sourceKind": "transcript",
+  "storageUri": "stored-file-name.docx",
+  "aiSettings": {
+    "provider": "custom",
+    "endpoint": "https://api.moonshot.cn/v1",
+    "apiKey": "...",
+    "model": "moonshot-v1-32k"
+  }
+}
+```
+
+When `aiSettings.provider = "none"`, backend uses deterministic parsing only.
+
 ### Parse Resume Source
 
 ```json
@@ -564,24 +625,33 @@ Required before create:
 }
 ```
 
-## Backend Build Sequence
+## Backend Status And Next Sequence
 
-Recommended implementation order:
+Already implemented for the local MVP:
 
-1. Extract mock data from `App.tsx` into `mockData.ts`.
-2. Extract Today Todo and summary metrics into pure selectors.
-3. Implement SQLite schema and migration bootstrap.
-4. Implement read APIs for all modules.
-5. Replace frontend mock state reads with API reads.
-6. Implement create/update/delete APIs module by module.
-7. Add file metadata persistence; keep real file storage local at first.
-8. Add AI parse endpoints only after schema validation is in place.
-9. Add audio transcription after interview parse output is stable.
+1. Mock data extracted from `App.tsx`.
+2. Today Todo and summary metrics extracted into selectors and mirrored in backend selectors.
+3. SQLite schema and migration bootstrap.
+4. Read/write/delete APIs for active modules.
+5. Frontend API hydration with local mock fallback.
+6. Local file storage and backup/restore including stored file contents.
+7. Parse endpoints with deterministic parsing, local txt/md/PDF/DOCX extraction, optional AI parsing, optional image OCR, optional audio transcription, and `extractionStatus` reporting.
+8. Interview Assist two-stage fan-out review in `server/aiProvider.mjs`.
+9. Frontend Assist/Local routing so interview text review only follows parse mode, not transcription mode.
+
+Next recommended backend work:
+
+1. Keep frontend/backend derived selectors aligned whenever Today Todo, priority, or dashboard metrics change.
+2. Test OCR with real provider credentials and real user samples.
+3. Improve interview stage-1 extraction reliability for long transcripts (chunking or faster model defaults).
+4. Add a "re-parse source" action on existing records.
+5. Add date-versioned training plans only after the single-current-plan loop is stable.
+6. Defer auth/cloud sync until the local single-user workflow is reliable.
 
 ## Open Decisions
 
-1. Backend runtime: Node local server, Electron/Tauri sidecar, or lightweight local API process.
-2. File storage root: app data directory vs user-selected workspace folder.
-3. Whether deletions are hard delete or soft delete.
-4. Whether weekly plans are single-current-plan or date-versioned from day one.
+1. Backend runtime packaging: keep lightweight local API process vs Electron/Tauri sidecar.
+2. File storage root: current local data directory vs user-selected workspace folder.
+3. Whether deletions remain hard delete or move to soft delete/history.
+4. Whether training plans remain single-current-plan or become date-versioned.
 5. Whether IDs should remain prefixed strings (`OP-*`, `INT-*`) or move to UUIDs while preserving display IDs.

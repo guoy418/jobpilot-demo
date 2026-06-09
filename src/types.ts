@@ -19,6 +19,7 @@ export type OpportunityDraft = {
   title: string;
   city: string;
   deadline: string;
+  dueDate?: string;
   priority: OpportunityPriority | "";
   match: OpportunityMatch | "";
   action: OpportunityAction | "";
@@ -55,6 +56,7 @@ export type SourceAsset = {
   detail: string;
   createdAt: string;
   content?: string;
+  storageUri?: string;
 };
 
 export type TimelineEvent = {
@@ -86,6 +88,7 @@ export type Opportunity = {
   action: OpportunityAction;
   city: string;
   deadline: string;
+  dueDate?: string;
   resumeId: string;
   nextAction: string;
   jdSummary: string;
@@ -101,6 +104,8 @@ export type SessionFile = {
   detail: string;
   uploadedAt: string;
   duration?: string;
+  storageUri?: string;
+  content?: string;
 };
 
 export type QaPair = {
@@ -132,6 +137,7 @@ export type AnswerCard = {
   type: string;
   status: "DRAFT" | "ACTIVE" | "NEEDS PRACTICE";
   source: string;
+  sourceQaPairId?: string;
   framework: string;
   answer: string;
   relatedRoles: string;
@@ -149,6 +155,7 @@ export type ResumeVersion = {
   points: string;
   summary: string;
   linkedOpportunityIds: string[];
+  storageUri?: string;
 };
 
 export type WeeklyTask = {
@@ -158,6 +165,7 @@ export type WeeklyTask = {
   source: "manual" | "weekly-focus" | "opportunity" | "interview" | "answer";
   sourceLabel: string;
   relatedEntityId?: string;
+  level?: OpportunityAction;
   status: "open" | "done";
 };
 
@@ -180,6 +188,10 @@ export type ModuleComposerSource = {
   sourceKind: ComposerSourceKind;
   rawText: string;
   note: string;
+  storageUri?: string;
+  fileSize?: string;
+  uploadStatus?: "idle" | "reading" | "uploading" | "stored" | "failed" | "local-only";
+  extractionStatus?: string;
 };
 
 export type ModuleComposerDraft = {
@@ -187,6 +199,7 @@ export type ModuleComposerDraft = {
   title: string;
   city: string;
   deadline: string;
+  dueDate: string;
   priority: OpportunityPriority;
   match: OpportunityMatch;
   action: OpportunityAction;

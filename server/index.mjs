@@ -1,5 +1,9 @@
 import http from "node:http";
+import fs from "node:fs";
+import { parseWithOptionalAi } from "./aiProvider.mjs";
 import { createRepository, openDatabase } from "./db.mjs";
+import { hydrateParsePayload } from "./fileTextExtractor.mjs";
+import { parseInterviewDraft, parseOpportunityDraft, parseResumeDraft } from "./parser.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -26,6 +30,20 @@ const sendNotFound = (res, path) =>
 
 const getPathParts = (url) => url.pathname.split("/").filter(Boolean);
 
+const contentTypeFor = (filePath) => {
+  const lowerPath = filePath.toLowerCase();
+  if (lowerPath.endsWith(".pdf")) return "application/pdf";
+  if (lowerPath.endsWith(".png")) return "image/png";
+  if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg")) return "image/jpeg";
+  if (lowerPath.endsWith(".webp")) return "image/webp";
+  if (lowerPath.endsWith(".gif")) return "image/gif";
+  if (lowerPath.endsWith(".mp3")) return "audio/mpeg";
+  if (lowerPath.endsWith(".m4a")) return "audio/mp4";
+  if (lowerPath.endsWith(".wav")) return "audio/wav";
+  if (lowerPath.endsWith(".md") || lowerPath.endsWith(".txt")) return "text/plain; charset=utf-8";
+  return "application/octet-stream";
+};
+
 const readJsonBody = async (req) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -45,6 +63,18 @@ const handleGet = (req, res) => {
     });
   }
 
+  if (parts[0] === "api" && parts[1] === "files" && parts[2]) {
+    const filePath = repo.getFilePath(parts[2]);
+    if (!filePath) return sendNotFound(res, url.pathname);
+    res.writeHead(200, {
+      "Content-Type": contentTypeFor(filePath),
+      "Access-Control-Allow-Origin": "*",
+      "Content-Disposition": `inline; filename="${encodeURIComponent(parts[2])}"`,
+    });
+    fs.createReadStream(filePath).pipe(res);
+    return;
+  }
+
   if (url.pathname === "/api/opportunities") return sendJson(res, 200, repo.listOpportunities());
   if (parts[0] === "api" && parts[1] === "opportunities" && parts[2]) {
     const opportunityId = decodeURIComponent(parts[2]);
@@ -55,10 +85,8 @@ const handleGet = (req, res) => {
     if (parts[3] === "source-assets") return sendJson(res, 200, repo.listOpportunitySourceAssets(opportunityId));
     if (parts[3] === "timeline") return sendJson(res, 200, repo.listOpportunityTimeline(opportunityId));
     if (parts[3] === "pipeline") {
-      return sendJson(res, 501, {
-        error: "not_implemented",
-        message: "Pipeline derivation is still frontend-side in v0.7. Next backend step should port buildOpportunityPipeline().",
-      });
+      const pipeline = repo.getOpportunityPipeline(opportunityId);
+      return pipeline ? sendJson(res, 200, pipeline) : sendNotFound(res, url.pathname);
     }
   }
 
@@ -83,6 +111,7 @@ const handleGet = (req, res) => {
   if (url.pathname === "/api/weekly-plan/current") return sendJson(res, 200, repo.getCurrentWeeklyPlan());
   if (url.pathname === "/api/dashboard/summary") return sendJson(res, 200, repo.getDashboardSummary());
   if (url.pathname === "/api/dashboard/today-actions") return sendJson(res, 200, repo.getTodayActions());
+  if (url.pathname === "/api/backup") return sendJson(res, 200, repo.createBackup());
 
   return sendNotFound(res, url.pathname);
 };
@@ -125,6 +154,36 @@ const handleWrite = async (req, res) => {
     const payload = await readJsonBody(req);
     const opportunity = repo.createOpportunity(payload);
     return sendJson(res, 201, opportunity);
+  }
+
+  if (url.pathname === "/api/files" && req.method === "POST") {
+    const payload = await readJsonBody(req);
+    const file = repo.saveFile(payload);
+    return sendJson(res, 201, file);
+  }
+
+  if (parts[0] === "api" && parts[1] === "parse" && req.method === "POST") {
+    const kind = parts[2];
+    const payload = await hydrateParsePayload(await readJsonBody(req), repo.getFilePath);
+    if (kind === "opportunity") {
+      const fallback = parseOpportunityDraft(payload);
+      return sendJson(res, 200, await parseWithOptionalAi(kind, payload, fallback));
+    }
+    if (kind === "interview") {
+      const fallback = parseInterviewDraft(payload);
+      return sendJson(res, 200, await parseWithOptionalAi(kind, payload, fallback));
+    }
+    if (kind === "resume") {
+      const fallback = parseResumeDraft(payload);
+      return sendJson(res, 200, await parseWithOptionalAi(kind, payload, fallback));
+    }
+    return sendNotFound(res, url.pathname);
+  }
+
+  if (url.pathname === "/api/backup" && req.method === "POST") {
+    const payload = await readJsonBody(req);
+    const backup = repo.restoreBackup(payload);
+    return sendJson(res, 200, backup);
   }
 
   if (parts[0] === "api" && parts[1] === "answers" && parts[2]) {
@@ -186,6 +245,10 @@ const handleWrite = async (req, res) => {
 
   if (parts[0] === "api" && parts[1] === "qa-pairs" && parts[2]) {
     const qaPairId = decodeURIComponent(parts[2]);
+    if (parts[3] === "create-answer-card" && req.method === "POST") {
+      const answer = repo.createAnswerFromQaPair(qaPairId);
+      return answer ? sendJson(res, 200, answer) : sendNotFound(res, url.pathname);
+    }
     if (req.method === "PATCH") {
       const payload = await readJsonBody(req);
       const qaPair = repo.updateQaPair(qaPairId, payload);
