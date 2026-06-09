@@ -189,6 +189,22 @@ const trainingTaskRouteLabel = (task: WeeklyTask) => {
   return "今日待办点击后打开：训练计划";
 };
 
+const pageShowsTopSearch = (currentPage: Page) => currentPage === "opportunities" || currentPage === "interviews" || currentPage === "answers";
+
+const topSearchPlaceholder = (currentPage: Page) => {
+  if (currentPage === "interviews") return "搜索公司、岗位、轮次";
+  if (currentPage === "answers") return "搜索问题、回答、来源、适用岗位";
+  return "搜索岗位、公司、下一步动作";
+};
+
+const getInterviewTranscriptText = (session: InterviewSession) => {
+  const files = session.sourceFiles ?? [];
+  const transcriptFile = files.find((file) => file.kind === "transcript" && file.content?.trim());
+  if (transcriptFile?.content) return transcriptFile.content.trim();
+  const fallbackFile = files.find((file) => file.content?.trim() && !/^(?:录音文件|文字稿文件)[：:]/.test(file.content.trim()));
+  return fallbackFile?.content?.trim() ?? "";
+};
+
 const failedExtractionStatuses = new Set([
   "stored-file-missing",
   "empty-pdf-text",
@@ -374,7 +390,6 @@ function App() {
   const [selectedInterviewId, setSelectedInterviewId] = useState(seedInterviewSessions[0].id);
   const [selectedQaId, setSelectedQaId] = useState(seedInterviewSessions[0].qaPairs[0].id);
   const [query, setQuery] = useState("");
-  const [interviewQuery, setInterviewQuery] = useState("");
   const [interviewPage, setInterviewPage] = useState(0);
   const [filter, setFilter] = useState("ALL");
   const [systemMessage, setSystemMessage] = useState("[READY]");
@@ -399,6 +414,8 @@ function App() {
   const [composerParsedQaPairs, setComposerParsedQaPairs] = useState<Array<Omit<QaPair, "id">>>([]);
   const [composerParseNotice, setComposerParseNotice] = useState("");
   const [composerParsing, setComposerParsing] = useState(false);
+  const [interviewReparseBusy, setInterviewReparseBusy] = useState(false);
+  const [interviewReparseNotice, setInterviewReparseNotice] = useState("");
   const [composerDraft, setComposerDraft] = useState<ModuleComposerDraft>(() =>
     createModuleComposerDraft(resumeVersions[0]?.id ?? "", seedOpportunities[0]?.id ?? ""),
   );
@@ -481,6 +498,10 @@ function App() {
     window.localStorage.setItem(dismissedTodayStorageKey, JSON.stringify({ date: todayDateKey(), ids: [...dismissedTodayIds] }));
   }, [dismissedTodayIds]);
 
+  useEffect(() => {
+    setInterviewReparseNotice("");
+  }, [selectedInterviewId]);
+
   const refreshApiInsights = () => {
     if (!isApiEnabled) return;
     void Promise.all([getDashboardSummaryApi(), getTodayActionsApi()])
@@ -528,18 +549,27 @@ function App() {
   const localTodayActions = selectTodayActions(opportunities, interviewSessions, answerCards, weeklyPlan, resumeList);
   const hydratedTodayActions = normalizeTodayActions(apiTodayActions, localTodayActions);
   const todayActions = hydratedTodayActions.filter((action) => !dismissedTodayIds.has(todayActionKey(action)));
+  const normalizedQuery = query.trim().toLowerCase();
   const filteredInterviewSessions = interviewSessions.filter((session) =>
-    `${session.company} ${session.role} ${session.round} ${session.date}`.toLowerCase().includes(interviewQuery.toLowerCase()),
+    `${session.company} ${session.role} ${session.round} ${session.date}`.toLowerCase().includes(normalizedQuery),
   );
   const interviewPageSize = 4;
   const interviewPageCount = Math.max(1, Math.ceil(filteredInterviewSessions.length / interviewPageSize));
   const visibleInterviewSessions = filteredInterviewSessions.slice(interviewPage * interviewPageSize, interviewPage * interviewPageSize + interviewPageSize);
+  const filteredAnswerCards = useMemo(
+    () =>
+      answerCards.filter((card) => {
+        const haystack = `${card.question} ${card.answer} ${card.framework} ${card.source} ${card.relatedRoles} ${card.type} ${card.status} ${card.practiceStatus}`.toLowerCase();
+        return haystack.includes(normalizedQuery);
+      }),
+    [answerCards, normalizedQuery],
+  );
 
   const filteredOpportunities = useMemo(() => {
     return opportunities.filter((item) => {
       const resumeName = resumeList.find((resume) => resume.id === item.resumeId)?.name ?? item.resumeId;
       const haystack = `${item.title} ${item.company} ${item.city} ${item.nextAction} ${resumeName}`.toLowerCase();
-      const matchesQuery = haystack.includes(query.toLowerCase());
+      const matchesQuery = haystack.includes(normalizedQuery);
       const computedAction = computeOpportunityAction(item);
       const matchesFilter =
         filter === "ALL" ||
@@ -549,7 +579,7 @@ function App() {
         (filter === "DUE SOON" && isOpportunityDueSoon(item));
       return matchesQuery && matchesFilter;
     });
-  }, [opportunities, query, filter, resumeList]);
+  }, [opportunities, normalizedQuery, filter, resumeList]);
 
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
@@ -959,6 +989,99 @@ function App() {
     setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...nextPatch } : item)));
     invalidateApiInsights();
     syncUpdatedOpportunity(selectedOpportunity.id, nextPatch);
+  };
+
+  const replaceInterviewQaPairs = (sessionId: string, previousPairs: QaPair[], nextPairs: Array<Omit<QaPair, "id">>) => {
+    const qaPairs: QaPair[] = nextPairs.map((pair) => ({ id: makeId("QA"), ...pair }));
+    setInterviewSessions((sessions) => sessions.map((session) => (session.id === sessionId ? { ...session, qaPairs } : session)));
+    setSelectedQaId(qaPairs[0]?.id ?? "");
+    previousPairs.forEach((pair) => syncDeletedQaPair(pair.id));
+    qaPairs.forEach((pair) => syncCreatedQaPair(sessionId, pair));
+    invalidateApiInsights();
+  };
+
+  const executeReparseSelectedInterview = async () => {
+    const transcript = getInterviewTranscriptText(selectedInterview);
+    if (!transcript) {
+      setInterviewReparseNotice("找不到可用文字稿。请先在原始材料里保存文字稿内容，或重新上传后再解析。");
+      return;
+    }
+
+    setInterviewReparseBusy(true);
+    setInterviewReparseNotice("正在根据原始文字稿重新解析，请稍候...");
+    setSystemMessage("[INTERVIEW REPARSE]");
+
+    try {
+      const shouldUseAiAssist = aiSettings.parseMode === "assist";
+      const sendAiSettings = shouldUseAiAssist && isAiProviderConfigured(aiSettings);
+      const transcriptFile = selectedInterview.sourceFiles?.find((file) => file.kind === "transcript") ?? selectedInterview.sourceFiles?.[0];
+      let nextPairs: Array<Omit<QaPair, "id">> = [];
+
+      if (isApiEnabled) {
+        const parsed = (await parseInterviewApi({
+          rawText: transcript,
+          fileName: transcriptFile?.fileName || `${selectedInterview.company}-${selectedInterview.round}-transcript.md`,
+          sourceKind: "transcript",
+          note: "重新解析已有面试文字稿",
+          company: selectedInterview.company,
+          role: selectedInterview.role,
+          round: selectedInterview.round,
+          date: selectedInterview.date,
+          aiSettings: sendAiSettings
+            ? {
+                provider: aiSettings.provider,
+                model: aiSettings.model,
+                apiKey: aiSettings.apiKey,
+                endpoint: aiSettings.endpoint,
+              }
+            : { provider: "none" },
+        })) as Record<string, string> & { qaPairs?: unknown; extractionError?: string; aiError?: string };
+
+        if (failedExtractionStatuses.has(parsed.extractionStatus ?? "")) {
+          setInterviewReparseNotice(
+            [extractionStatusLabel(parsed.extractionStatus), parsed.aiError || parsed.extractionError].filter(Boolean).join("：") ||
+              "重新解析失败，请检查文字稿或 Assist 配置。",
+          );
+          setSystemMessage(`[REPARSE BLOCKED: ${parsed.extractionStatus ?? "failed"}]`);
+          return;
+        }
+        nextPairs = normalizeParsedQaPairs(parsed.qaPairs);
+      } else {
+        nextPairs = parseTranscriptQaPairs(transcript);
+      }
+
+      if (!nextPairs.length) {
+        setInterviewReparseNotice("没有从文字稿中识别出有效问题。请检查文字稿格式，或开启 Assist 后重试。");
+        setSystemMessage("[REPARSE EMPTY]");
+        return;
+      }
+
+      replaceInterviewQaPairs(selectedInterview.id, selectedInterview.qaPairs, nextPairs);
+      setInterviewReparseNotice(`已重新解析 ${nextPairs.length} 个问题。`);
+      setSystemMessage("[INTERVIEW REPARSED]");
+    } catch (error) {
+      const errorDetail = error instanceof Error ? error.message : String(error || "");
+      setInterviewReparseNotice(errorDetail ? `重新解析失败：${errorDetail}` : "重新解析失败，请稍后重试。");
+      setSystemMessage("[REPARSE FAILED]");
+    } finally {
+      setInterviewReparseBusy(false);
+    }
+  };
+
+  const requestReparseSelectedInterview = () => {
+    const transcript = getInterviewTranscriptText(selectedInterview);
+    if (!transcript) {
+      setInterviewReparseNotice("找不到可用文字稿。请先在原始材料里保存文字稿内容，或重新上传后再解析。");
+      return;
+    }
+    requestConfirm({
+      title: "重新解析这场面试的问题？",
+      description: "会用原始文字稿重新拆题并生成复盘，当前问题列表会被替换。",
+      confirmLabel: "重新解析",
+      onConfirm: () => {
+        void executeReparseSelectedInterview();
+      },
+    });
   };
 
   const addQaPair = () => {
@@ -1942,24 +2065,35 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="system-readout">
-            <span>LOCAL DATA</span>
-            <strong>{systemMessage}</strong>
+          <ApiModeBadge apiMode={apiMode} onRefresh={refreshApiHealth} />
+          <div className="sidebar-footer-meta">
+            <div className="system-readout">
+              <span>LOCAL DATA</span>
+              <strong>{systemMessage}</strong>
+            </div>
+            <button className="icon-button" title="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
           </div>
-          <button className="icon-button" title="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
         </div>
       </aside>
 
       <main className="workspace">
-        <header className="topbar">
-          <div className="search-box">
-            <Search size={16} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索岗位、公司、下一步动作" />
-          </div>
-          <ApiModeBadge apiMode={apiMode} onRefresh={refreshApiHealth} />
-        </header>
+        {pageShowsTopSearch(page) ? (
+          <header className="topbar">
+            <div className="search-box search-box-full">
+              <Search size={16} />
+              <input
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setInterviewPage(0);
+                }}
+                placeholder={topSearchPlaceholder(page)}
+              />
+            </div>
+          </header>
+        ) : null}
 
         {page === "home" && (
           <section className="home-stack">
@@ -2324,18 +2458,6 @@ function App() {
                 </button>
               </div>
 
-              <div className="interview-search">
-                <Search size={14} />
-                <input
-                  value={interviewQuery}
-                  onChange={(event) => {
-                    setInterviewQuery(event.target.value);
-                    setInterviewPage(0);
-                  }}
-                  placeholder="搜索公司、岗位、轮次"
-                />
-              </div>
-
               <div className="interview-tabs">
                 {visibleInterviewSessions.map((session) => (
                   <button key={session.id} className={session.id === selectedInterview.id ? "active-session" : ""} onClick={() => selectInterview(session.id)}>
@@ -2417,6 +2539,13 @@ function App() {
 
               <div className="source-panel compact-source">
                 <SectionTitle label="原始材料" title="对应这场面试的文件" action={`${selectedInterview.sourceFiles?.length ?? 0} FILES`} />
+                <div className="button-row source-panel-actions">
+                  <button className="secondary-button compact-button" disabled={interviewReparseBusy} onClick={requestReparseSelectedInterview}>
+                    <RotateCcw size={14} />
+                    <span>{interviewReparseBusy ? "解析中..." : "重新解析问题"}</span>
+                  </button>
+                </div>
+                {interviewReparseNotice ? <p className="parse-inline-notice">{interviewReparseNotice}</p> : null}
                 <div className="source-list">
                   {(selectedInterview.sourceFiles ?? []).map((file) => {
                     const Icon = file.kind === "audio" ? FileAudio : FileText;
@@ -2540,17 +2669,21 @@ function App() {
                 </button>
               </div>
               <div className="answer-list">
-                {answerCards.map((card) => (
-                  <button
-                    className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
-                    key={card.id}
-                    onClick={() => setSelectedAnswerId(card.id)}
-                  >
-                    <span className="type-pill">{card.type}</span>
-                    <h3>{card.question}</h3>
-                    <small>{card.source} / {card.practiceStatus}</small>
-                  </button>
-                ))}
+                {filteredAnswerCards.length === 0 ? (
+                  <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
+                ) : (
+                  filteredAnswerCards.map((card) => (
+                    <button
+                      className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
+                      key={card.id}
+                      onClick={() => setSelectedAnswerId(card.id)}
+                    >
+                      <span className="type-pill">{card.type}</span>
+                      <h3>{card.question}</h3>
+                      <small>{card.source} / {card.practiceStatus}</small>
+                    </button>
+                  ))
+                )}
               </div>
             </div>
 

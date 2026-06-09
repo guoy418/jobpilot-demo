@@ -196,11 +196,28 @@ button:disabled {
 .sidebar-footer {
   margin-top: auto;
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
   border-top: 1px solid var(--border);
   padding-top: 18px;
+}
+
+.sidebar-footer-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.sidebar-footer .api-mode-badge {
+  width: 100%;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
+}
+
+.sidebar-footer .api-mode-badge em {
+  display: none;
 }
 
 .system-readout {
@@ -229,10 +246,11 @@ button:disabled {
 }
 
 .topbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
-  gap: 16px;
   margin-bottom: 24px;
+}
+
+.search-box-full {
+  width: 100%;
 }
 
 .import-console,
@@ -1443,8 +1461,27 @@ small {
 
 .interview-page {
   display: grid;
-  grid-template-columns: minmax(360px, 0.75fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
   gap: 16px;
+}
+
+.interview-list-pane > .button-row,
+.resume-list-pane > .button-row,
+.answer-list-pane > .button-row {
+  margin-top: 18px;
+  margin-bottom: 18px;
+}
+
+.parse-inline-notice {
+  margin: 12px 0 0;
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.source-panel-actions.button-row {
+  margin-top: 12px;
+  margin-bottom: 0;
 }
 
 .interview-list-pane,
@@ -1457,26 +1494,6 @@ small {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 10px;
-}
-
-.interview-search {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-raised);
-  margin-bottom: 10px;
-}
-
-.interview-search input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--text-primary);
 }
 
 .pager-row {
@@ -1545,6 +1562,8 @@ small {
 .resume-detail-pane {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .review-editor .danger-zone,
@@ -1557,6 +1576,7 @@ small {
   display: grid;
   gap: 8px;
   margin-bottom: 14px;
+  min-width: 0;
 }
 
 .review-block span {
@@ -1568,6 +1588,8 @@ small {
 
 .review-block textarea {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 86px;
   resize: vertical;
   border: 1px solid var(--border);
@@ -1577,6 +1599,7 @@ small {
   padding: 12px;
   outline: 0;
   line-height: 1.55;
+  box-sizing: border-box;
 }
 
 .review-block textarea:focus {
@@ -1598,8 +1621,15 @@ small {
 .resume-workspace,
 .weekly-workspace {
   display: grid;
-  grid-template-columns: minmax(360px, 0.8fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
   gap: 16px;
+}
+
+.answer-list-pane,
+.answer-editor,
+.review-editor,
+.interview-list-pane {
+  min-width: 0;
 }
 
 .answer-list-pane,
@@ -1613,9 +1643,17 @@ small {
 
 .answer-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 18px;
+}
+
+.empty-list-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 16px 12px;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 
 .answer-card {
@@ -1644,6 +1682,14 @@ small {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 8px;
+  min-width: 0;
+}
+
+.inline-controls select {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .inline-controls label,
