@@ -143,6 +143,19 @@ export const computeOpportunityAction = ({
   return rankPriority[Math.max(0, Math.min(3, rank))];
 };
 
+export const resolveOpportunityAction = (opportunity: {
+  status: OpportunityStatus;
+  deadline?: string;
+  dueDate?: string;
+  match?: OpportunityMatch;
+  priority?: OpportunityPriority;
+  action?: OpportunityAction;
+  actionManual?: boolean;
+}): OpportunityAction => {
+  if (opportunity.actionManual && opportunity.action) return opportunity.action;
+  return computeOpportunityAction(opportunity);
+};
+
 let idSequence = 0;
 export const makeId = (prefix: string) => {
   idSequence = (idSequence + 1) % 10000;

@@ -137,6 +137,7 @@ const chatEndpointFrom = (config) => {
   if (/\/audio\/transcriptions$/i.test(normalized)) return normalized.replace(/\/audio\/transcriptions$/i, "/chat/completions");
   if (/\/v1$/i.test(normalized)) return `${normalized}/chat/completions`;
   if (/^https:\/\/api\.(deepseek|openai)\.com$/i.test(normalized)) return `${normalized}/v1/chat/completions`;
+  if (/^https:\/\/api\.moonshot\.cn$/i.test(normalized)) return `${normalized}/v1/chat/completions`;
   return `${normalized}/chat/completions`;
 };
 

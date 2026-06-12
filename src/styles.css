@@ -409,15 +409,40 @@ button:disabled {
 
 .flow-step {
   position: relative;
+  min-height: 54px;
+  padding: 0;
+  border-radius: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.flow-step:hover,
+.flow-step:focus-within {
+  border-color: var(--border-visible);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.flow-step-button {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: start;
+  width: 100%;
   min-height: 54px;
   padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.flow-step-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .flow-step:not(:last-child)::after {
@@ -1097,6 +1122,14 @@ small {
 .draft-edit-grid label {
   display: grid;
   gap: 8px;
+}
+
+.field-hint,
+.draft-edit-grid .field-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .draft-edit-grid .wide-field {
@@ -2884,26 +2917,6 @@ small {
 .interview-json-guide textarea {
   min-height: 120px;
   font-size: 12px;
-}
-
-.interview-raw-guide {
-  grid-column: 1 / -1;
-  display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-raised);
-}
-
-.interview-raw-guide strong {
-  color: var(--text-display);
-}
-
-.interview-raw-guide span {
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .asset-preview-panel p {

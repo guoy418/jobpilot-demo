@@ -223,6 +223,34 @@ if (parsedStoredJdPayload.company !== "阿里" || !parsedStoredJdPayload.title.i
 }
 console.log("PASS POST /api/parse/opportunity stored text");
 
+const uploadedUtf16Transcript = await fetch(`${API_URL}/api/files`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    fileName: `api-check-utf16-${Date.now()}.txt`,
+    mimeType: "text/plain",
+    dataBase64: Buffer.from("\ufeff面试官：你负责过什么项目？\n我：我负责 JobPilot。", "utf16le").toString("base64"),
+  }),
+});
+if (!uploadedUtf16Transcript.ok) throw new Error(`POST /api/files utf16 transcript returned ${uploadedUtf16Transcript.status}`);
+const uploadedUtf16Payload = await uploadedUtf16Transcript.json();
+const parsedUtf16Transcript = await fetch(`${API_URL}/api/parse/interview`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: "",
+    fileName: uploadedUtf16Payload.fileName,
+    storageUri: uploadedUtf16Payload.storageUri,
+    sourceKind: "transcript",
+  }),
+});
+if (!parsedUtf16Transcript.ok) throw new Error(`POST /api/parse/interview utf16 transcript returned ${parsedUtf16Transcript.status}`);
+const parsedUtf16Payload = await parsedUtf16Transcript.json();
+if (parsedUtf16Payload.extractionStatus !== "ai-not-configured" || !String(parsedUtf16Payload.sourceText || "").includes("JobPilot")) {
+  throw new Error("POST /api/parse/interview did not decode UTF-16 transcript file");
+}
+console.log("PASS POST /api/parse/interview UTF-16 transcript decode");
+
 const parsedWithBrokenAi = await fetch(`${API_URL}/api/parse/opportunity`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },

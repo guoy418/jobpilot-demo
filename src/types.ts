@@ -86,6 +86,7 @@ export type Opportunity = {
   priority: OpportunityPriority;
   match: OpportunityMatch;
   action: OpportunityAction;
+  actionManual?: boolean;
   city: string;
   deadline: string;
   dueDate?: string;

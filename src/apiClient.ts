@@ -55,6 +55,7 @@ export type ParserPayload = {
 export type OpportunityProgressPayload = {
   status: Opportunity["status"];
   action?: Opportunity["action"];
+  actionManual?: boolean;
   nextAction?: string;
   timelineEvent?: {
     id: string;

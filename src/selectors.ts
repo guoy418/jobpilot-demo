@@ -1,4 +1,4 @@
-import { computeOpportunityAction, submittedStatuses } from "./domain";
+import { computeOpportunityAction, resolveOpportunityAction, submittedStatuses } from "./domain";
 import type { AnswerCard, InterviewSession, Opportunity, OpportunityAction, Page, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
 export type TodayAction = {
@@ -44,7 +44,7 @@ export const selectDashboardSummary = (
   interviewSessions: InterviewSession[],
   weeklyPlan: WeeklyPlan,
 ): DashboardSummary => {
-  const opportunityActions = opportunities.map(computeOpportunityAction);
+  const opportunityActions = opportunities.map(resolveOpportunityAction);
   const submittedApplications = opportunities.filter((item) => submittedStatuses.includes(item.status)).length;
   const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
   const pendingReviewCount = interviewSessions.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
@@ -78,7 +78,7 @@ export const selectTodayActions = (
   const opportunityActionItems: TodayAction[] = opportunities
     .filter((item) => item.status === "TO APPLY" || item.status === "WRITTEN TEST" || item.status === "INTERVIEWING")
     .map((item) => ({
-      level: computeOpportunityAction(item),
+      level: resolveOpportunityAction(item),
       title:
         item.status === "TO APPLY"
           ? `投递${item.company}${item.title}`
@@ -89,7 +89,7 @@ export const selectTodayActions = (
               : `跟进${item.company}${item.title}`,
       detail: `${item.nextAction} / 使用 ${selectResumeName(resumeList, item.resumeId)}`,
       page: "opportunityDetail",
-      filter: computeOpportunityAction(item),
+      filter: resolveOpportunityAction(item),
       source: "opportunity",
       targetId: item.id,
     }));

@@ -91,6 +91,11 @@ const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match =
   return actionByRank[Math.max(0, Math.min(3, rank))];
 };
 
+const resolveOpportunityAction = (opportunity) => {
+  if (opportunity.actionManual && opportunity.action) return opportunity.action;
+  return computeOpportunityAction(opportunity);
+};
+
 const sortTodayActions = (actions) => [...actions].sort((left, right) => actionPriorityRank[left.level] - actionPriorityRank[right.level]);
 
 const nowIso = () => new Date().toISOString();
@@ -216,6 +221,7 @@ const toOpportunity = (row, sourceAssets = [], timeline = []) => ({
   priority: row.priority,
   match: row.match,
   action: row.action,
+  actionManual: Boolean(row.action_manual),
   city: row.city,
   deadline: row.deadline,
   dueDate: row.due_date ?? undefined,
@@ -473,6 +479,7 @@ const ensureColumn = (db, tableName, columnName, definition) => {
 
 const migrateSchema = (db) => {
   ensureColumn(db, "opportunities", "due_date", "TEXT");
+  ensureColumn(db, "opportunities", "action_manual", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "opportunity_source_assets", "storage_uri", "TEXT");
   ensureColumn(db, "interview_source_files", "content", "TEXT");
   ensureColumn(db, "interview_source_files", "storage_uri", "TEXT");
@@ -773,13 +780,14 @@ export const createRepository = (db) => {
     const dueDate = input.dueDate || inferDueDateFromText(deadline);
     const priority = input.priority || "B";
     const match = input.match || "MEDIUM";
-    const action = computeOpportunityAction({ status, deadline, dueDate, match, priority });
+    const actionManual = Boolean(input.actionManual);
+    const action = actionManual && input.action ? input.action : computeOpportunityAction({ status, deadline, dueDate, match, priority });
     const id = input.id || makeId("OP");
     db.prepare(`
       INSERT INTO opportunities (
-        id, title, company, status, priority, match, action, city, deadline, due_date, resume_id,
+        id, title, company, status, priority, match, action, action_manual, city, deadline, due_date, resume_id,
         next_action, jd_summary, jd_text, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.title?.trim() || "未填写岗位",
@@ -788,6 +796,7 @@ export const createRepository = (db) => {
       priority,
       match,
       action,
+      actionManual ? 1 : 0,
       input.city?.trim() || "待定",
       deadline,
       dueDate || null,
@@ -811,7 +820,10 @@ export const createRepository = (db) => {
       ...patch,
     };
     if ("deadline" in patch && !("dueDate" in patch)) next.dueDate = inferDueDateFromText(next.deadline);
-    if (["status", "deadline", "dueDate", "priority", "match"].some((field) => field in patch) && !("action" in patch)) {
+    if (!next.actionManual && ["status", "deadline", "dueDate", "priority", "match"].some((field) => field in patch) && !("action" in patch)) {
+      next.action = computeOpportunityAction(next);
+    }
+    if ("actionManual" in patch && patch.actionManual === false && !("action" in patch)) {
       next.action = computeOpportunityAction(next);
     }
     db.prepare(`
@@ -822,6 +834,7 @@ export const createRepository = (db) => {
           priority = ?,
           match = ?,
           action = ?,
+          action_manual = ?,
           city = ?,
           deadline = ?,
           due_date = ?,
@@ -838,6 +851,7 @@ export const createRepository = (db) => {
       next.priority,
       next.match,
       next.action,
+      next.actionManual ? 1 : 0,
       next.city,
       next.deadline,
       next.dueDate || null,
@@ -882,7 +896,7 @@ export const createRepository = (db) => {
     ];
     const updatedOpportunity = updateOpportunity(id, {
       status,
-      action: input.action || computeOpportunityAction({ ...current, status }),
+      ...(current.actionManual ? {} : { action: input.action || computeOpportunityAction({ ...current, status }) }),
       nextAction,
       timeline: nextTimeline,
     });
@@ -1394,7 +1408,7 @@ export const createRepository = (db) => {
     const opportunities = listOpportunities();
     const interviews = listInterviews();
     const weeklyPlan = getCurrentWeeklyPlan();
-    const opportunityActions = opportunities.map(computeOpportunityAction);
+    const opportunityActions = opportunities.map(resolveOpportunityAction);
     const submittedApplications = opportunities.filter((item) => submittedStatuses.includes(item.status)).length;
     const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
     const pendingReviewCount = interviews.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
@@ -1438,7 +1452,7 @@ export const createRepository = (db) => {
     const opportunityActions = opportunities
       .filter((item) => item.status === "TO APPLY" || item.status === "WRITTEN TEST" || item.status === "INTERVIEWING")
       .map((item) => ({
-        level: computeOpportunityAction(item),
+        level: resolveOpportunityAction(item),
         title:
           item.status === "TO APPLY"
             ? `投递${item.company}${item.title}`
@@ -1449,7 +1463,7 @@ export const createRepository = (db) => {
                 : `跟进${item.company}${item.title}`,
         detail: `${item.nextAction} / 使用 ${resumeName(item.resumeId)}`,
         page: "opportunityDetail",
-        filter: computeOpportunityAction(item),
+        filter: resolveOpportunityAction(item),
         source: "opportunity",
         targetPage: "opportunityDetail",
         targetId: item.id,

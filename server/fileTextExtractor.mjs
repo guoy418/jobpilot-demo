@@ -3,6 +3,7 @@ import path from "node:path";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import { ocrImageWithOptionalAi, transcribeAudioWithOptionalAi } from "./aiProvider.mjs";
+import { decodeTextFileSync } from "./textEncoding.mjs";
 
 const TEXT_LIMIT = 250_000;
 
@@ -66,9 +67,17 @@ export const hydrateParsePayload = async (payload, getFilePath) => {
 
   try {
     if (isTextFile(filePath)) {
+      const decoded = decodeTextFileSync(filePath);
+      if (decoded.garbled) {
+        return fallbackSourceNote(
+          payload,
+          "text-encoding-failed",
+          "文本文件编码无法识别，看起来像乱码。请用 UTF-8 重新导出转写稿，或直接粘贴文字内容。",
+        );
+      }
       return {
         ...payload,
-        rawText: truncateText(fs.readFileSync(filePath, "utf8")),
+        rawText: truncateText(decoded.text),
         extractionStatus: "local-text",
       };
     }

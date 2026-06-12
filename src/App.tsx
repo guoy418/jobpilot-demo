@@ -26,8 +26,10 @@ import {
   X,
 } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { isGarbledTextContent, readTextFile } from "./textEncoding";
 import {
   computeOpportunityAction,
+  resolveOpportunityAction,
   formatNow,
   getOpportunityDueDate,
   inferDueDateFromText,
@@ -120,7 +122,7 @@ const navItems: Array<{ id: Page; label: string; icon: typeof Home }> = [
   { id: "exports", label: "设置备份", icon: FileDown },
 ];
 
-const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根据我提供的面试录音转写稿，整理成一份可以直接导入 JobPilot 的结构化面试复盘。
+const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根据我提供的面试录音转写稿，整理成一份结构化面试复盘。
 
 请严格遵守：
 1. 只输出 JSON，不要 markdown，不要代码块，不要解释。
@@ -158,11 +160,11 @@ const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根
 - polishedAnswer：基于原回答和合理补充，写出优化后的可背诵版本。
 - questionType：可选 BEHAVIORAL / PROJECT / TECHNICAL / MOTIVATION / PRODUCT。`;
 
-const flowPipelineSteps = [
-  { title: "添加资料", hint: "把岗位、面试或简历放进来" },
-  { title: "整理内容", hint: "检查信息是否准确" },
-  { title: "开始跟进", hint: "保存到对应模块" },
-  { title: "安排今天", hint: "把要做的事放到待办里" },
+const workflowTabs = [
+  { page: "opportunities" as const, label: "岗位管理", hint: "录入 JD，推进投递" },
+  { page: "interviews" as const, label: "面试复盘", hint: "整理问答，发现问题" },
+  { page: "answers" as const, label: "答案库", hint: "沉淀可背答案" },
+  { page: "weekly" as const, label: "训练计划", hint: "安排练习与复盘" },
 ] as const;
 
 type ApiDashboardSummary = Partial<DashboardSummary> & {
@@ -259,6 +261,13 @@ const getInterviewTranscriptText = (session: InterviewSession) => {
   return fallbackFile?.content?.trim() ?? "";
 };
 
+const fetchErrorHint = (message: string) => {
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return "无法连接本地 API（127.0.0.1:8787）。请确认终端里 npm run dev:local 正在运行，然后刷新页面重试。";
+  }
+  return message;
+};
+
 const failedExtractionStatuses = new Set([
   "stored-file-missing",
   "empty-pdf-text",
@@ -276,6 +285,7 @@ const failedExtractionStatuses = new Set([
   "ai-review-empty",
   "unsupported-file-type",
   "file-extraction-failed",
+  "text-encoding-failed",
 ]);
 
 const extractionStatusLabel = (status?: string) => {
@@ -304,6 +314,7 @@ const extractionStatusLabel = (status?: string) => {
     "ai-review-empty": "没有整理出有效问题",
     "unsupported-file-type": "当前文件类型不能自动读取",
     "file-extraction-failed": "文件提取失败，请换文件或粘贴文字",
+    "text-encoding-failed": "文本编码无法识别，请用 UTF-8 重新导出或直接粘贴文字",
   };
   return labels[status] ?? status;
 };
@@ -632,15 +643,15 @@ function App() {
       [
         {
           id: "interview",
-          title: "面试复盘",
-          detail: "来自面试问题和答案卡，适合练表达、补框架。",
+          title: "面试表达练习",
+          detail: "从面试复盘或答案卡中选择想练的问题，添加到这里。",
           examples: ["重讲一个薄弱项目题", "把答案卡练到能自然复述"],
           tasks: weeklyPlan.tasks.filter((task) => task.source === "interview" || task.source === "answer"),
         },
         {
           id: "practice",
           title: "自主训练",
-          detail: "放笔试、作品集、英语和材料整理。",
+          detail: "手动添加笔试、作品集、英语和材料整理等其他任务。",
           examples: ["练一道笔试题", "整理一版项目表达"],
           tasks: weeklyPlan.tasks.filter((task) => task.source === "manual" || task.source === "weekly-focus"),
         },
@@ -653,7 +664,7 @@ function App() {
       const resumeName = resumeList.find((resume) => resume.id === item.resumeId)?.name ?? item.resumeId;
       const haystack = `${item.title} ${item.company} ${item.city} ${item.nextAction} ${resumeName}`.toLowerCase();
       const matchesQuery = haystack.includes(normalizedQuery);
-      const computedAction = computeOpportunityAction(item);
+      const computedAction = resolveOpportunityAction(item);
       const matchesFilter =
         filter === "ALL" ||
         computedAction === filter ||
@@ -667,7 +678,8 @@ function App() {
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
     : [];
-  const selectedOpportunityAction = selectedOpportunity ? computeOpportunityAction(selectedOpportunity) : "P2";
+  const selectedOpportunityAction = selectedOpportunity ? resolveOpportunityAction(selectedOpportunity) : "P2";
+  const selectedOpportunitySuggestedAction = selectedOpportunity ? computeOpportunityAction(selectedOpportunity) : "P2";
 
   const goTo = (nextPage: Page) => {
     setPage(nextPage);
@@ -719,9 +731,25 @@ function App() {
     if (/\.(txt|md|json)$/i.test(file.name)) {
       setSystemMessage("正在读取文件");
       setComposerSource((source) => ({ ...source, uploadStatus: "reading" }));
-      void file.text()
-        .then((text) => {
-          setComposerSource((source) => ({ ...source, rawText: text, uploadStatus: isApiEnabled ? source.uploadStatus : "stored" }));
+      void readTextFile(file)
+        .then((decoded) => {
+          if (decoded.garbled) {
+            setComposerSource((source) => ({
+              ...source,
+              rawText: "",
+              extractionStatus: "text-encoding-failed",
+              uploadStatus: "failed",
+            }));
+            setComposerParseNotice("文本文件编码无法识别，看起来像乱码。请用 UTF-8 重新导出转写稿，或直接粘贴文字内容。");
+            setSystemMessage("文本编码无法识别");
+            return;
+          }
+          setComposerSource((source) => ({
+            ...source,
+            rawText: decoded.text,
+            extractionStatus: "local-text",
+            uploadStatus: isApiEnabled ? source.uploadStatus : "stored",
+          }));
           setSystemMessage("文件已读取");
         })
         .catch(() => {
@@ -899,6 +927,11 @@ function App() {
       setSystemMessage(`[PARSE BLOCKED: ${status}]`);
     };
 
+    if (composer === "interview" && interviewInputMode === "raw-transcript" && rawText && isGarbledTextContent(rawText)) {
+      blockParseWithNotice("text-encoding-failed", "文字稿看起来像乱码，通常是文件编码不对。请用 UTF-8 重新导出转写稿，或直接粘贴文字内容。");
+      return;
+    }
+
     if (composer === "interview" && interviewInputMode === "raw-transcript" && (!isApiEnabled || !shouldUseAiAssist || !isAiProviderConfigured(aiSettings))) {
       blockParseWithNotice("ai-not-configured", "未整理的面试文稿需要先开启智能整理；整理好的复盘文档可以切回上一个方式直接导入。");
       return;
@@ -1019,7 +1052,7 @@ function App() {
         setSystemMessage("内容已整理");
         return;
       } catch (error) {
-        const errorDetail = error instanceof Error ? error.message : String(error || "");
+        const errorDetail = fetchErrorHint(error instanceof Error ? error.message : String(error || ""));
         if (composer === "interview" && sendAiSettings) {
           blockParseWithNotice(
             "ai-parser-failed",
@@ -1116,9 +1149,15 @@ function App() {
   const updateSelectedOpportunity = (patch: Partial<Opportunity>) => {
     const normalizedPatch =
       "deadline" in patch && !("dueDate" in patch) ? { ...patch, dueDate: inferDueDateFromText(patch.deadline ?? "") } : patch;
-    const shouldRecomputeAction = ["status", "deadline", "dueDate", "priority", "match"].some((field) => field in normalizedPatch) && !("action" in normalizedPatch);
     const nextOpportunity = { ...selectedOpportunity, ...normalizedPatch };
+    const shouldRecomputeAction =
+      !nextOpportunity.actionManual &&
+      ["status", "deadline", "dueDate", "priority", "match"].some((field) => field in normalizedPatch) &&
+      !("action" in normalizedPatch);
     const nextPatch = shouldRecomputeAction ? { ...normalizedPatch, action: computeOpportunityAction(nextOpportunity) } : normalizedPatch;
+    if ("actionManual" in normalizedPatch && normalizedPatch.actionManual === false && !("action" in normalizedPatch)) {
+      nextPatch.action = computeOpportunityAction(nextOpportunity);
+    }
     setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...nextPatch } : item)));
     invalidateApiInsights();
     syncUpdatedOpportunity(selectedOpportunity.id, nextPatch);
@@ -1193,7 +1232,7 @@ function App() {
       setInterviewReparseNotice(`已重新整理 ${nextPairs.length} 个问题。`);
       setSystemMessage("面试已重新整理");
     } catch (error) {
-      const errorDetail = error instanceof Error ? error.message : String(error || "");
+      const errorDetail = fetchErrorHint(error instanceof Error ? error.message : String(error || ""));
       setInterviewReparseNotice(errorDetail ? `重新整理失败：${errorDetail}` : "重新整理失败，请稍后重试。");
       setSystemMessage("重新整理失败");
     } finally {
@@ -1992,7 +2031,9 @@ function App() {
     if (!targetOpportunity) return;
     const now = formatNow();
     const nextAction = opportunityStatusNextAction[status];
-    const nextComputedAction = computeOpportunityAction({ ...targetOpportunity, status });
+    const nextActionLevel = targetOpportunity.actionManual
+      ? targetOpportunity.action
+      : computeOpportunityAction({ ...targetOpportunity, status });
     const timelineEvent = {
       id: makeId("TL"),
       occurredAt: now,
@@ -2003,7 +2044,7 @@ function App() {
     const buildLocalOpportunity = (opportunity: Opportunity): Opportunity => ({
       ...opportunity,
       status,
-      action: computeOpportunityAction({ ...opportunity, status }),
+      action: opportunity.actionManual ? opportunity.action : computeOpportunityAction({ ...opportunity, status }),
       nextAction,
       timeline: [
         ...opportunity.timeline.filter((event) => event.status !== "next"),
@@ -2045,7 +2086,7 @@ function App() {
       setSystemMessage("正在更新进度");
       void progressOpportunityApi(opportunityId, {
         status,
-        action: nextComputedAction,
+        action: nextActionLevel,
         nextAction,
         timelineEvent,
       })
@@ -2073,7 +2114,7 @@ function App() {
   const openTodayAction = (action: TodayAction) => {
     if (action.filter) setFilter(action.filter);
     if (action.page === "opportunityDetail") {
-      const targetOpportunityId = action.targetId || opportunities.find((item) => computeOpportunityAction(item) === "P0")?.id || opportunities[0]?.id;
+      const targetOpportunityId = action.targetId || opportunities.find((item) => resolveOpportunityAction(item) === "P0")?.id || opportunities[0]?.id;
       if (targetOpportunityId) openOpportunity(targetOpportunityId);
     } else if (action.page === "interviews" && action.targetId) {
       openInterviewSession(action.targetId);
@@ -2259,21 +2300,23 @@ function App() {
 
         {page === "home" && (
           <section className="home-stack">
-            <section className="flow-pipeline" aria-label="使用步骤">
+            <section className="flow-pipeline workflow-tabs" aria-label="求职闭环">
               <div className="flow-pipeline-intro">
-                <span className="eyebrow">使用步骤</span>
-                <p>先把资料放进来，再把今天要推进的事收好。</p>
+                <span className="eyebrow">求职闭环</span>
+                <p>从岗位到复盘、答案沉淀和训练计划；今日待办会把各模块里该推进的事收在一起。</p>
               </div>
               <ol className="flow-pipeline-steps">
-                {flowPipelineSteps.map((step, index) => (
-                  <li key={step.title} className="flow-step">
-                    <span className="flow-step-index" aria-hidden="true">
-                      {index + 1}
-                    </span>
-                    <div className="flow-step-copy">
-                      <strong>{step.title}</strong>
-                      <span>{step.hint}</span>
-                    </div>
+                {workflowTabs.map((step, index) => (
+                  <li key={step.page} className="flow-step">
+                    <button type="button" className="flow-step-button" onClick={() => goTo(step.page)}>
+                      <span className="flow-step-index" aria-hidden="true">
+                        {index + 1}
+                      </span>
+                      <div className="flow-step-copy">
+                        <strong>{step.label}</strong>
+                        <span>{step.hint}</span>
+                      </div>
+                    </button>
                   </li>
                 ))}
               </ol>
@@ -2347,22 +2390,22 @@ function App() {
                 </div>
 
                 <div className="surface todo-rule-card">
-                  <SectionTitle label="今日待办" title="待办事项来自于" action="自动汇总" />
+                  <SectionTitle label="今日待办" title="待办从哪里来" action="自动汇总" />
                   <div className="todo-rule-list">
                     <button onClick={() => goTo("opportunities")}>
                       <span className="source-chip">岗位</span>
                       <strong>岗位进度</strong>
-                      <small>待投递、笔试和面试中的岗位会出现在这里。</small>
+                      <small>待投递，以及需准备笔试、面试的岗位，会自动生成跟进待办。</small>
                     </button>
                     <button onClick={() => goTo("interviews")}>
                       <span className="source-chip">面试</span>
                       <strong>面试复盘</strong>
-                      <small>标记为薄弱的问题会提醒你继续练习。</small>
+                      <small>复盘中标记为薄弱的问题，会自动加入今日待办。</small>
                     </button>
                     <button onClick={() => goTo("weekly")}>
                       <span className="source-chip">训练</span>
                       <strong>训练计划</strong>
-                      <small>手动添加的练习、材料整理和笔试准备会出现在这里。</small>
+                      <small>可手动添加训练任务，也可从面试复盘或答案库加入，自动同步到今日待办。</small>
                     </button>
                   </div>
                 </div>
@@ -2435,7 +2478,7 @@ function App() {
                     </span>
                     <StatusPill status={item.status} />
                     <span className="signal-stack">
-                      <b className={`priority ${computeOpportunityAction(item).toLowerCase()}`}>{computeOpportunityAction(item)}</b>
+                      <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
                       <small>{item.priority} / {item.match}</small>
                     </span>
                     <span className="mono">{item.deadline}</span>
@@ -2512,7 +2555,28 @@ function App() {
                 </label>
                 <label>
                   <span>今日优先级</span>
-                  <input readOnly value={selectedOpportunityAction} />
+                  <select
+                    value={selectedOpportunity.actionManual ? selectedOpportunity.action : "AUTO"}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      if (value === "AUTO") {
+                        updateSelectedOpportunity({ actionManual: false, action: computeOpportunityAction(selectedOpportunity) });
+                        return;
+                      }
+                      updateSelectedOpportunity({ actionManual: true, action: value as Opportunity["action"] });
+                    }}
+                  >
+                    <option value="AUTO">自动（建议 {selectedOpportunitySuggestedAction}）</option>
+                    <option value="P0">P0 · 今天必须做</option>
+                    <option value="P1">P1 · 今天优先</option>
+                    <option value="P2">P2 · 可排进今天</option>
+                    <option value="P3">P3 · 暂不推进</option>
+                  </select>
+                  <small className="field-hint">
+                    {selectedOpportunity.actionManual
+                      ? `已手动设为 ${selectedOpportunityAction}；自动建议为 ${selectedOpportunitySuggestedAction}。`
+                      : `根据状态、截止日和主观优先级自动计算，当前为 ${selectedOpportunityAction}。`}
+                  </small>
                 </label>
                 <label>
                   <span>城市</span>
@@ -3039,7 +3103,7 @@ function App() {
               <PageIntro
                 label="训练计划"
                 title="安排本周要练的事"
-                detail="把笔试准备、面试表达、作品集整理和材料补充拆成可以完成的小任务。"
+                detail="训练计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
                 action={`${weeklyPlan.tasks.filter((task) => task.status === "open").length} 待完成`}
               />
               <div className="weekly-overview">
@@ -3227,8 +3291,8 @@ function App() {
         )}
 
         {composer && (
-          <div className="asset-preview" role="dialog" aria-modal="true">
-            <div className="asset-preview-panel module-composer-panel">
+          <div className="asset-preview" role="dialog" aria-modal="true" onClick={() => setComposer(null)}>
+            <div className="asset-preview-panel module-composer-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setComposer(null)} aria-label="关闭">
                 <X size={16} />
               </button>
@@ -3393,12 +3457,6 @@ function App() {
                       >
                         复制整理模板
                       </button>
-                    </div>
-                  )}
-                  {composer === "interview" && interviewInputMode === "raw-transcript" && (
-                    <div className="wide-field interview-raw-guide">
-                      <strong>这个入口适合还没复盘的原始稿</strong>
-                      <span>系统会先帮你拆出问题和原回答；如果开启智能整理，还会补充复盘建议和优化回答。</span>
                     </div>
                   )}
                 </div>
@@ -3600,8 +3658,8 @@ function App() {
         )}
 
         {previewAsset && (
-          <div className="asset-preview" role="dialog" aria-modal="true">
-            <div className="asset-preview-panel">
+          <div className="asset-preview" role="dialog" aria-modal="true" onClick={() => setPreviewAsset(null)}>
+            <div className="asset-preview-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setPreviewAsset(null)} aria-label="关闭">
                 <X size={16} />
               </button>
@@ -3621,8 +3679,8 @@ function App() {
         )}
 
         {previewSessionFile && (
-          <div className="asset-preview" role="dialog" aria-modal="true">
-            <div className="asset-preview-panel">
+          <div className="asset-preview" role="dialog" aria-modal="true" onClick={() => setPreviewSessionFile(null)}>
+            <div className="asset-preview-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setPreviewSessionFile(null)} aria-label="关闭">
                 <X size={16} />
               </button>
@@ -3838,7 +3896,7 @@ function BoardView({ opportunities, openOpportunity }: { opportunities: Opportun
             .filter((item) => item.status === status)
             .map((item) => (
               <button className="job-card job-card-button" key={item.id} onClick={() => openOpportunity(item.id)}>
-                <span className={`priority ${computeOpportunityAction(item).toLowerCase()}`}>{computeOpportunityAction(item)}</span>
+                <span className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</span>
                 <h3>{item.title}</h3>
                 <p>{item.company}</p>
                 <small>{item.nextAction}</small>
