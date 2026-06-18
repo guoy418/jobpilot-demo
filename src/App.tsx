@@ -25,7 +25,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { isGarbledTextContent, readTextFile } from "./textEncoding";
 import {
   computeOpportunityAction,
@@ -107,6 +107,7 @@ import type {
   ResumeVersion,
   SessionFile,
   SourceAsset,
+  TimelineEvent,
   ViewMode,
   WeeklyPlan,
   WeeklyTask,
@@ -231,9 +232,40 @@ const todayActionKey = (action: Pick<TodayAction, "page" | "title" | "targetId">
 const todayActionSourceLabel = (action: TodayAction) => {
   if (action.source === "opportunity") return "岗位";
   if (action.source === "interview") return "面试";
-  if (action.source === "answer") return "答案";
   if (action.source === "weekly") return "训练";
   return "待办";
+};
+
+const historyTimelinePlaceholder = "10.1 投递岗位\n10.5 一面\n10.8 跟进 HR";
+
+const isTimelineOccurredAtPrefix = (value = "") => /^(\d{1,4}[./-]\d{1,2}(?:[./-]\d{1,2})?|\d{1,2}月\d{1,2}(?:日|号)?|Next)$/i.test(value);
+
+const formatOpportunityHistory = (timeline: TimelineEvent[] = []) =>
+  timeline
+    .filter((event) => event.status === "done")
+    .map((event) => [event.occurredAt && event.occurredAt !== "历史" ? event.occurredAt : "", event.title, event.detail ? `- ${event.detail}` : ""].filter(Boolean).join(" "))
+    .join("\n");
+
+const parseOpportunityHistory = (value: string, existingTimeline: TimelineEvent[] = []) => {
+  const existingDone = existingTimeline.filter((event) => event.status === "done");
+  const doneEvents: TimelineEvent[] = value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const match = line.match(/^(\S+)\s+(.+)$/);
+      const hasOccurredAtPrefix = Boolean(match && isTimelineOccurredAtPrefix(match[1]));
+      const body = match ? match[2].trim() : line;
+      const [title, ...detailParts] = (hasOccurredAtPrefix ? body : line).split(/\s+-\s+/);
+      return {
+        id: existingDone[index]?.id ?? `TL-HISTORY-${Date.now()}-${index}`,
+        occurredAt: hasOccurredAtPrefix ? match![1] : "",
+        title: title.trim(),
+        detail: detailParts.join(" - ").trim(),
+        status: "done" as const,
+      };
+    });
+  return [...doneEvents, ...existingTimeline.filter((event) => event.status === "next")];
 };
 
 const pageShowsTopSearch = (currentPage: Page) => currentPage === "opportunities" || currentPage === "interviews" || currentPage === "answers";
@@ -259,7 +291,7 @@ const opportunityFilterLabel = (value: string) => {
 const completedOpportunityStatus = (status: OpportunityStatus): OpportunityStatus | null => {
   if (status === "TO APPLY") return "APPLIED";
   if (status === "APPLIED") return "WRITTEN TEST";
-  if (status === "WRITTEN TEST") return "INTERVIEWING";
+  if (status === "WRITTEN TEST") return "SCREENING";
   if (status === "INTERVIEWING") return "WAITING";
   if (status === "WAITING") return "OFFER";
   return null;
@@ -505,12 +537,61 @@ const paginateWeeklyGroupTasks = (tasks: WeeklyTask[], page: number, groupId: st
   return paginateList(tasks, page, GRID_PAGE_SIZE);
 };
 
+const isOpenWeeklyTask = (task: WeeklyTask) => task.status === "open";
+
+const openNativeDatePicker = (input: HTMLInputElement | null) => {
+  if (!input) return;
+  input.focus();
+  try {
+    input.showPicker?.();
+  } catch {
+    // showPicker requires a direct user gesture in some browsers; focus keeps the field usable.
+  }
+};
+
+function DatePickerInput({
+  id,
+  value,
+  onChange,
+  label,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  label: string;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  return (
+    <div className="date-picker-control">
+      <input
+        id={id}
+        ref={inputRef}
+        type="date"
+        value={value}
+        aria-label={label}
+        onClick={(event) => openNativeDatePicker(event.currentTarget)}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <button
+        type="button"
+        className="date-picker-button"
+        aria-label={`打开${label}选择器`}
+        onClick={() => openNativeDatePicker(inputRef.current)}
+      >
+        <CalendarClock size={16} />
+      </button>
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState<Page>("home");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(seedOpportunities[0].id);
+  const [opportunityHistoryDrafts, setOpportunityHistoryDrafts] = useState<Record<string, string>>({});
   const [interviewSessions, setInterviewSessions] = useState(seedInterviewSessions);
   const [selectedInterviewId, setSelectedInterviewId] = useState(seedInterviewSessions[0].id);
   const [selectedQaId, setSelectedQaId] = useState(seedInterviewSessions[0].qaPairs[0].id);
@@ -523,6 +604,9 @@ function App() {
   const [todayPage, setTodayPage] = useState(0);
   const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
   const [answerView, setAnswerView] = useState<"list" | "detail">("list");
+  const [randomPracticeAnswerId, setRandomPracticeAnswerId] = useState("");
+  const [randomPracticeSpinning, setRandomPracticeSpinning] = useState(false);
+  const [randomPracticeReveal, setRandomPracticeReveal] = useState(false);
   const [filter, setFilter] = useState("ALL");
   const [systemMessage, setSystemMessage] = useState("准备好了");
   const [apiMode, setApiMode] = useState<ApiModeState>(() =>
@@ -554,6 +638,7 @@ function App() {
     createModuleComposerDraft(resumeVersions[0]?.id ?? "", seedOpportunities[0]?.id ?? ""),
   );
   const apiOpportunityIdsRef = useRef(new Set(seedOpportunities.map((item) => item.id)));
+  const modalBackdropPointerStartedRef = useRef(false);
 
   const markApiOnline = (health?: ApiHealth) => {
     setApiMode({ status: "online", dbPath: health?.dbPath, checkedAt: new Date().toLocaleTimeString() });
@@ -699,10 +784,12 @@ function App() {
       }),
     [answerCards, normalizedQuery],
   );
+  const randomPracticeCard = answerCards.find((card) => card.id === randomPracticeAnswerId);
   const answerList = paginateList(filteredAnswerCards, answerPage, GRID_PAGE_SIZE);
   const visibleAnswerCards = answerList.visible;
   const answerPageCount = answerList.pageCount;
   const safeAnswerPage = answerList.safePage;
+  const openWeeklyTasks = useMemo(() => weeklyPlan.tasks.filter(isOpenWeeklyTask), [weeklyPlan.tasks]);
   const weeklyTaskGroups = useMemo(
     () =>
       [
@@ -711,18 +798,19 @@ function App() {
           title: "面试表达练习",
           detail: "从面试复盘或答案卡中选择想练的问题，添加到这里。",
           examples: ["重讲一个薄弱项目题", "把答案卡练到能自然复述"],
-          tasks: weeklyPlan.tasks.filter((task) => task.source === "interview" || task.source === "answer"),
+          tasks: openWeeklyTasks.filter((task) => task.source === "interview" || task.source === "answer"),
         },
         {
           id: "practice",
           title: "自主训练",
           detail: "手动添加笔试、作品集、英语和材料整理等其他任务。",
           examples: ["练一道笔试题", "整理一版项目表达"],
-          tasks: weeklyPlan.tasks.filter((task) => task.source === "manual" || task.source === "weekly-focus"),
+          tasks: openWeeklyTasks.filter((task) => task.source === "manual" || task.source === "weekly-focus"),
         },
       ],
-    [weeklyPlan.tasks],
+    [openWeeklyTasks],
   );
+  const visibleTrainingTaskCount = weeklyTaskGroups.reduce((count, group) => count + group.tasks.length, 0);
 
   const filteredOpportunities = useMemo(() => {
     return opportunities.filter((item) => {
@@ -753,6 +841,13 @@ function App() {
     : [];
   const selectedOpportunityAction = selectedOpportunity ? resolveOpportunityAction(selectedOpportunity) : "P2";
   const selectedOpportunitySuggestedAction = selectedOpportunity ? computeOpportunityAction(selectedOpportunity) : "P2";
+  const selectedOpportunityActionHint =
+    selectedOpportunity && selectedOpportunity.actionManual
+      ? `已手动设为 ${selectedOpportunityAction}；自动建议为 ${selectedOpportunitySuggestedAction}。`
+      : `根据状态、截止日和主观优先级自动计算，当前为 ${selectedOpportunityAction}。`;
+  const selectedOpportunityHistoryDraft = selectedOpportunity
+    ? opportunityHistoryDrafts[selectedOpportunity.id] ?? formatOpportunityHistory(selectedOpportunity.timeline)
+    : "";
 
   const goTo = (nextPage: Page) => {
     setPage(nextPage);
@@ -1183,7 +1278,7 @@ function App() {
     setAnswerView("detail");
   };
 
-  const updateSelectedQa = (field: keyof Pick<QaPair, "originalAnswer" | "critique" | "framework" | "optimizedAnswer">, value: string) => {
+  const updateSelectedQa = (field: keyof Pick<QaPair, "question" | "originalAnswer" | "critique" | "framework" | "optimizedAnswer">, value: string) => {
     const patch = { [field]: value } as Partial<QaPair>;
     setInterviewSessions((sessions) =>
       sessions.map((session) =>
@@ -1220,8 +1315,7 @@ function App() {
   };
 
   const updateSelectedOpportunity = (patch: Partial<Opportunity>) => {
-    const normalizedPatch =
-      "deadline" in patch && !("dueDate" in patch) ? { ...patch, dueDate: inferDueDateFromText(patch.deadline ?? "") } : patch;
+    const normalizedPatch = patch;
     const nextOpportunity = { ...selectedOpportunity, ...normalizedPatch };
     const shouldRecomputeAction =
       !nextOpportunity.actionManual &&
@@ -1352,6 +1446,16 @@ function App() {
   };
 
   const requestConfirm = (config: ConfirmDialogState) => setConfirmDialog(config);
+
+  const markModalBackdropPointerStart = (event: MouseEvent<HTMLDivElement>) => {
+    modalBackdropPointerStartedRef.current = event.target === event.currentTarget;
+  };
+
+  const closeModalFromBackdropClick = (event: MouseEvent<HTMLDivElement>, close: () => void) => {
+    const shouldClose = modalBackdropPointerStartedRef.current && event.target === event.currentTarget;
+    modalBackdropPointerStartedRef.current = false;
+    if (shouldClose) close();
+  };
 
   useEffect(() => {
     if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm) return;
@@ -1554,7 +1658,7 @@ function App() {
       framework: "背景 -> 动作 -> 结果 -> 复盘",
       answer: "在这里写你希望下次面试复用的回答。",
       relatedRoles: "待填写",
-      practiceStatus: "未练习",
+      practiceStatus: "中等",
     };
     setAnswerCards((cards) => [newCard, ...cards]);
     setSelectedAnswerId(newCard.id);
@@ -1825,19 +1929,12 @@ function App() {
 
   const updateWeeklyTask = (id: string, field: keyof Pick<WeeklyTask, "title" | "detail" | "status" | "level">, value: string) => {
     const patch = { [field]: value } as Partial<WeeklyTask>;
-    const currentTask = weeklyPlan.tasks.find((task) => task.id === id);
     setWeeklyPlan((plan) => ({
       ...plan,
       tasks: plan.tasks.map((task) => (task.id === id ? { ...task, [field]: value } : task)),
     }));
     invalidateApiInsights();
     syncUpdatedWeeklyTask(id, patch);
-    if (field === "status" && currentTask?.source === "answer" && currentTask.relatedEntityId) {
-      updateAnswerPracticeState(
-        currentTask.relatedEntityId,
-        value === "done" ? { practiceStatus: "可复用", status: "ACTIVE" } : { practiceStatus: "练习中", status: "NEEDS PRACTICE" },
-      );
-    }
   };
 
   const deleteWeeklyTask = (id: string) => {
@@ -1882,10 +1979,31 @@ function App() {
       source: "answer",
       sourceLabel: "答案库",
       relatedEntityId: selectedAnswer.id,
-      level: selectedAnswer.status === "NEEDS PRACTICE" ? "P1" : "P2",
+      level: "P2",
     });
-    updateAnswerPracticeState(selectedAnswer.id, { practiceStatus: "练习中", status: "NEEDS PRACTICE" });
     setPage("weekly");
+  };
+
+  const startRandomAnswerPractice = () => {
+    const candidates = filteredAnswerCards.length ? filteredAnswerCards : answerCards;
+    if (!candidates.length) {
+      setSystemMessage("没有可练习的答案卡");
+      return;
+    }
+
+    let pickedIndex = Math.floor(Math.random() * candidates.length);
+    if (candidates.length > 1 && candidates[pickedIndex]?.id === randomPracticeAnswerId) {
+      pickedIndex = (pickedIndex + 1) % candidates.length;
+    }
+
+    const picked = candidates[pickedIndex];
+    setRandomPracticeSpinning(true);
+    setRandomPracticeReveal(false);
+    window.setTimeout(() => {
+      setRandomPracticeAnswerId(picked.id);
+      setRandomPracticeSpinning(false);
+      setSystemMessage("已抽出一张临时练习卡");
+    }, 520);
   };
 
   const updateWeeklyTargetApplications = (targetApplications: number) => {
@@ -1931,7 +2049,7 @@ function App() {
       match: composerDraft.match,
       action,
       city: composerDraft.city.trim() || "待定",
-      deadline: composerDraft.deadline.trim() || "待定",
+      deadline: composerDraft.deadline.trim(),
       dueDate,
       resumeId: composerDraft.resumeId || resumeList[0]?.id || "",
       nextAction: composerDraft.nextAction.trim() || "补齐材料后投递",
@@ -2092,7 +2210,7 @@ function App() {
       framework: composerDraft.framework.trim() || "背景 -> 动作 -> 结果 -> 复盘",
       answer: composerDraft.answer.trim() || "在这里补充可复用回答。",
       relatedRoles: composerDraft.relatedRoles.trim() || "待填写",
-      practiceStatus: "未练习",
+      practiceStatus: "中等",
     };
 
     setAnswerCards((cards) => [newCard, ...cards]);
@@ -2256,13 +2374,6 @@ function App() {
       return;
     }
 
-    if (action.source === "answer" && action.targetId) {
-      updateAnswerPracticeState(action.targetId, { practiceStatus: "可复用", status: "ACTIVE" });
-      setApiTodayActions(null);
-      setSystemMessage("练习已完成");
-      return;
-    }
-
     setDismissedTodayIds((ids) => new Set(ids).add(todayActionKey(action)));
     setSystemMessage("今日已暂不显示");
   };
@@ -2293,13 +2404,13 @@ function App() {
         id: makeId("AC"),
         question: selectedQa.question,
         type: selectedQa.type,
-        status: selectedQa.weak ? "NEEDS PRACTICE" : "DRAFT",
+        status: "ACTIVE",
         source: "面试复盘",
         sourceQaPairId: selectedQa.id,
         framework: selectedQa.framework,
         answer: selectedQa.optimizedAnswer,
         relatedRoles: selectedInterview.role,
-        practiceStatus: selectedQa.weak ? "练习中" : "未练习",
+        practiceStatus: selectedQa.weak ? "薄弱" : "中等",
       };
       setAnswerCards((cards) => [newCard, ...cards]);
       setSelectedAnswerId(newCard.id);
@@ -2569,8 +2680,8 @@ function App() {
                     <span>岗位</span>
                     <span>状态</span>
                     <span>优先级</span>
-                    <span>截止</span>
-                    <span>备注</span>
+                    <span>截止日期</span>
+                    <span>下一步动作</span>
                   </div>
                   {visibleOpportunities.map((item) => (
                     <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
@@ -2583,7 +2694,7 @@ function App() {
                         <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
                         <small>{item.priority} / {item.match}</small>
                       </span>
-                      <span className="mono">{item.deadline}</span>
+                      <span className="mono">{getOpportunityDueDate(item)}</span>
                       <span>{item.nextAction}</span>
                     </button>
                   ))}
@@ -2660,7 +2771,12 @@ function App() {
                   </select>
                 </label>
                 <label>
-                  <span>今日优先级</span>
+                  <span className="field-label-row">
+                    <span>今日优先级</span>
+                    <span className="field-tooltip" tabIndex={0} aria-label={selectedOpportunityActionHint} data-tooltip={selectedOpportunityActionHint}>
+                      ?
+                    </span>
+                  </span>
                   <select
                     value={selectedOpportunity.actionManual ? selectedOpportunity.action : "AUTO"}
                     onChange={(event) => {
@@ -2678,11 +2794,6 @@ function App() {
                     <option value="P2">P2 · 可排进今天</option>
                     <option value="P3">P3 · 暂不推进</option>
                   </select>
-                  <small className="field-hint">
-                    {selectedOpportunity.actionManual
-                      ? `已手动设为 ${selectedOpportunityAction}；自动建议为 ${selectedOpportunitySuggestedAction}。`
-                      : `根据状态、截止日和主观优先级自动计算，当前为 ${selectedOpportunityAction}。`}
-                  </small>
                 </label>
                 <label>
                   <span>城市</span>
@@ -2699,20 +2810,21 @@ function App() {
                   </select>
                 </label>
                 <label>
-                  <span>截止说明</span>
-                  <input value={selectedOpportunity.deadline} onChange={(event) => updateSelectedOpportunity({ deadline: event.target.value })} />
-                </label>
-                <label>
-                  <span>截止日期</span>
-                  <input
-                    type="date"
-                    value={getOpportunityDueDate(selectedOpportunity)}
-                    onChange={(event) => updateSelectedOpportunity({ dueDate: event.target.value })}
-                  />
-                </label>
-                <label className="wide-field">
-                  <span>备注</span>
+                  <span>下一步动作</span>
                   <input value={selectedOpportunity.nextAction} onChange={(event) => updateSelectedOpportunity({ nextAction: event.target.value })} />
+                </label>
+                <div className="date-field">
+                  <label htmlFor="opportunity-detail-due-date">截止日期</label>
+                  <DatePickerInput
+                    id="opportunity-detail-due-date"
+                    value={selectedOpportunity.dueDate ?? ""}
+                    label="截止日期"
+                    onChange={(value) => updateSelectedOpportunity({ dueDate: value })}
+                  />
+                </div>
+                <label className="wide-field opportunity-note-field">
+                  <span>备注</span>
+                  <textarea value={selectedOpportunity.deadline} onChange={(event) => updateSelectedOpportunity({ deadline: event.target.value })} />
                 </label>
               </div>
               <div className="button-row">
@@ -2741,9 +2853,27 @@ function App() {
                   {selectedOpportunity.status === "TO APPLY"
                     ? "今日待办里点完成后，会同步标记为已投递。"
                     : selectedOpportunity.status === "WRITTEN TEST"
-                      ? "完成笔试待办后，会推进到面试中。"
+                      ? "完成笔试待办后，会推进到筛选中。"
+                      : selectedOpportunity.status === "SCREENING"
+                        ? "筛选通过后，可以手动切到准备面试并生成面试准备待办。"
                       : "阶段有变化时，可以直接点击上面的节点更新。"}
                 </p>
+                <div className="opportunity-history-box">
+                  <label>
+                    <span>历史时间线</span>
+                    <textarea
+                      value={selectedOpportunityHistoryDraft}
+                      placeholder={historyTimelinePlaceholder}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setOpportunityHistoryDrafts((drafts) => ({ ...drafts, [selectedOpportunity.id]: value }));
+                        updateSelectedOpportunity({
+                          timeline: parseOpportunityHistory(value, selectedOpportunity.timeline),
+                        });
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
               <div className="danger-zone">
                 <span>危险操作</span>
@@ -2793,7 +2923,7 @@ function App() {
                         <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
                           <div className="interview-card-topline">
                             <span>{session.date}</span>
-                            <strong>{weakCount ? `${weakCount} 题待练` : "已整理"}</strong>
+                            <strong>{weakCount ? `${weakCount} 题待处理` : "已整理"}</strong>
                           </div>
                           <h3>{session.company}</h3>
                           <p>{session.role} · {session.round}</p>
@@ -2946,7 +3076,7 @@ function App() {
                       <strong>{selectedQa.score}/5</strong>
                     </div>
 
-                    <ReviewBlock label="面试问题" value={selectedQa.question} readOnly />
+                    <ReviewBlock label="面试问题" value={selectedQa.question} onChange={(value) => updateSelectedQa("question", value)} />
                     <ReviewBlock
                       label="我的原回答"
                       value={selectedQa.originalAnswer}
@@ -3025,6 +3155,10 @@ function App() {
                       <Plus size={16} />
                       <span>新增答案卡</span>
                     </button>
+                    <button className="secondary-button answer-random-button" onClick={startRandomAnswerPractice} disabled={randomPracticeSpinning || answerCards.length === 0}>
+                      <Sparkles size={16} />
+                      <span>{randomPracticeSpinning ? "抽取中..." : "随机抽练"}</span>
+                    </button>
                     <button className="secondary-button" onClick={() => goTo("interviews")}>
                       <FileAudio size={16} />
                       <span>从复盘生成</span>
@@ -3032,6 +3166,42 @@ function App() {
                   </div>
                 </div>
                 <div className="paginated-pane-body">
+                  {(randomPracticeCard || randomPracticeSpinning) && (
+                    <div className={`answer-practice-panel ${randomPracticeSpinning ? "is-shuffling" : ""}`}>
+                      <div className="answer-practice-deck" aria-hidden="true">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                      <div className="answer-practice-copy">
+                        <span className="eyebrow">临时练习</span>
+                        <h3>{randomPracticeSpinning ? "正在洗牌抽题..." : randomPracticeCard?.question}</h3>
+                        <p>
+                          {randomPracticeSpinning
+                            ? "从当前答案库里随机挑一张，不会加入训练计划。"
+                            : randomPracticeCard?.framework}
+                        </p>
+                      </div>
+                      {!randomPracticeSpinning && randomPracticeCard ? (
+                        <div className="answer-practice-actions">
+                          <button className="primary-button compact-button" onClick={() => setRandomPracticeReveal((visible) => !visible)}>
+                            {randomPracticeReveal ? "收起答案" : "显示推荐回答"}
+                          </button>
+                          <button className="secondary-button compact-button" onClick={startRandomAnswerPractice}>
+                            换一张
+                          </button>
+                          <button className="ghost-button compact-button" onClick={() => openAnswerCard(randomPracticeCard.id)}>
+                            打开卡片
+                          </button>
+                        </div>
+                      ) : null}
+                      {!randomPracticeSpinning && randomPracticeCard && randomPracticeReveal ? (
+                        <div className="answer-practice-answer">
+                          {randomPracticeCard.answer}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                   <div className="answer-list paginated-pane-content">
                     {filteredAnswerCards.length === 0 ? (
                       <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
@@ -3046,7 +3216,7 @@ function App() {
                             <span className="type-pill">{card.type}</span>
                             <h3>{card.question}</h3>
                           </div>
-                          <small>{card.source} / {card.practiceStatus}</small>
+                          <small>{card.status === "DRAFT" ? "草稿" : "可复用"} / {card.practiceStatus}</small>
                           <ChevronRight size={16} />
                         </button>
                       ))
@@ -3063,26 +3233,25 @@ function App() {
                     <span>全部答案</span>
                   </button>
                 </div>
-                <SectionTitle label={selectedAnswer.source} title={selectedAnswer.question} action={selectedAnswer.status} />
+                <SectionTitle label={selectedAnswer.source} title={selectedAnswer.question} action={selectedAnswer.status === "DRAFT" ? "草稿" : "可复用"} />
                 <ReviewBlock label="问题" value={selectedAnswer.question} onChange={(value) => updateSelectedAnswer("question", value)} />
                 <ReviewBlock label="回答框架" value={selectedAnswer.framework} onChange={(value) => updateSelectedAnswer("framework", value)} />
                 <ReviewBlock label="推荐回答" value={selectedAnswer.answer} onChange={(value) => updateSelectedAnswer("answer", value)} />
                 <ReviewBlock label="适用岗位" value={selectedAnswer.relatedRoles} onChange={(value) => updateSelectedAnswer("relatedRoles", value)} />
                 <div className="inline-controls">
                   <label>
-                    <span>状态</span>
+                    <span>卡片状态</span>
                     <select value={selectedAnswer.status} onChange={(event) => updateSelectedAnswer("status", event.target.value)}>
                       <option value="DRAFT">草稿</option>
                       <option value="ACTIVE">可复用</option>
-                      <option value="NEEDS PRACTICE">需要练习</option>
                     </select>
                   </label>
                   <label>
                     <span>练习状态</span>
                     <select value={selectedAnswer.practiceStatus} onChange={(event) => updateSelectedAnswer("practiceStatus", event.target.value)}>
-                      <option value="未练习">未练习</option>
-                      <option value="练习中">练习中</option>
-                      <option value="可复用">可复用</option>
+                      <option value="薄弱">薄弱</option>
+                      <option value="中等">中等</option>
+                      <option value="熟练">熟练</option>
                     </select>
                   </label>
                 </div>
@@ -3209,7 +3378,7 @@ function App() {
                   label="训练计划"
                   title="安排本周要练的事"
                   detail="训练计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
-                  action={`${weeklyPlan.tasks.filter((task) => task.status === "open").length} 待完成`}
+                  action={`${visibleTrainingTaskCount} 待完成`}
                 />
                 <div className="weekly-overview">
                   <div className="weekly-progress-card">
@@ -3395,7 +3564,13 @@ function App() {
         )}
 
         {composer && (
-          <div className="asset-preview" role="dialog" aria-modal="true" onClick={() => setComposer(null)}>
+          <div
+            className="asset-preview"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={markModalBackdropPointerStart}
+            onClick={(event) => closeModalFromBackdropClick(event, () => setComposer(null))}
+          >
             <div className="asset-preview-panel module-composer-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setComposer(null)} aria-label="关闭">
                 <X size={16} />
@@ -3583,19 +3758,18 @@ function App() {
                       <input value={composerDraft.city} onChange={(event) => updateComposerDraft("city", event.target.value)} />
                     </label>
                     <label>
-                      <span>截止说明</span>
-                      <input
-                        value={composerDraft.deadline}
-                        onChange={(event) => {
-                          updateComposerDraft("deadline", event.target.value);
-                          updateComposerDraft("dueDate", inferDueDateFromText(event.target.value));
-                        }}
+                      <span>下一步动作</span>
+                      <input value={composerDraft.nextAction} onChange={(event) => updateComposerDraft("nextAction", event.target.value)} />
+                    </label>
+                    <div className="date-field">
+                      <label htmlFor="composer-opportunity-due-date">截止日期</label>
+                      <DatePickerInput
+                        id="composer-opportunity-due-date"
+                        value={composerDraft.dueDate}
+                        label="截止日期"
+                        onChange={(value) => updateComposerDraft("dueDate", value)}
                       />
-                    </label>
-                    <label>
-                      <span>截止日期</span>
-                      <input type="date" value={composerDraft.dueDate} onChange={(event) => updateComposerDraft("dueDate", event.target.value)} />
-                    </label>
+                    </div>
                     <label>
                       <span>主观优先级</span>
                       <select value={composerDraft.priority} onChange={(event) => updateComposerDraft("priority", event.target.value)}>
@@ -3625,12 +3799,15 @@ function App() {
                       </select>
                     </label>
                     <label className="wide-field">
-                      <span>来源 / 备注</span>
+                      <span>来源</span>
                       <input value={composerDraft.sourceLabel} onChange={(event) => updateComposerDraft("sourceLabel", event.target.value)} />
                     </label>
-                    <label className="wide-field">
+                    <label className="wide-field opportunity-note-field">
                       <span>备注</span>
-                      <input value={composerDraft.nextAction} onChange={(event) => updateComposerDraft("nextAction", event.target.value)} />
+                      <textarea
+                        value={composerDraft.deadline}
+                        onChange={(event) => updateComposerDraft("deadline", event.target.value)}
+                      />
                     </label>
                     <label className="wide-field">
                       <span>岗位描述 *</span>
@@ -3762,7 +3939,13 @@ function App() {
         )}
 
         {previewAsset && (
-          <div className="asset-preview" role="dialog" aria-modal="true" onClick={() => setPreviewAsset(null)}>
+          <div
+            className="asset-preview"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={markModalBackdropPointerStart}
+            onClick={(event) => closeModalFromBackdropClick(event, () => setPreviewAsset(null))}
+          >
             <div className="asset-preview-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setPreviewAsset(null)} aria-label="关闭">
                 <X size={16} />
@@ -3783,7 +3966,13 @@ function App() {
         )}
 
         {previewSessionFile && (
-          <div className="asset-preview" role="dialog" aria-modal="true" onClick={() => setPreviewSessionFile(null)}>
+          <div
+            className="asset-preview"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={markModalBackdropPointerStart}
+            onClick={(event) => closeModalFromBackdropClick(event, () => setPreviewSessionFile(null))}
+          >
             <div className="asset-preview-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setPreviewSessionFile(null)} aria-label="关闭">
                 <X size={16} />
@@ -3805,7 +3994,13 @@ function App() {
         )}
 
         {weeklyTaskForm && (
-          <div className="asset-preview weekly-task-dialog" role="dialog" aria-modal="true" onClick={() => setWeeklyTaskForm(null)}>
+          <div
+            className="asset-preview weekly-task-dialog"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={markModalBackdropPointerStart}
+            onClick={(event) => closeModalFromBackdropClick(event, () => setWeeklyTaskForm(null))}
+          >
             <div className="asset-preview-panel weekly-task-form-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setWeeklyTaskForm(null)} aria-label="关闭">
                 <X size={16} />
@@ -3865,7 +4060,8 @@ function App() {
             className="asset-preview confirm-dialog"
             role="dialog"
             aria-modal="true"
-            onClick={() => setConfirmDialog(null)}
+            onMouseDown={markModalBackdropPointerStart}
+            onClick={(event) => closeModalFromBackdropClick(event, () => setConfirmDialog(null))}
           >
             <div className="asset-preview-panel confirm-panel" onClick={(event) => event.stopPropagation()}>
               <button className="modal-close-button" onClick={() => setConfirmDialog(null)} aria-label="关闭">

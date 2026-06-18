@@ -6,12 +6,13 @@ const DATA_DIR = path.join(process.cwd(), "server", "data");
 const DB_PATH = process.env.JOBPILOT_DB_PATH || path.join(DATA_DIR, "jobpilot.local.sqlite");
 const FILE_DIR = process.env.JOBPILOT_FILE_DIR || path.join(DATA_DIR, "files");
 
-const submittedStatuses = ["APPLIED", "WRITTEN TEST", "INTERVIEWING", "WAITING", "OFFER"];
-const opportunityStatusFlow = ["TO APPLY", "APPLIED", "WRITTEN TEST", "INTERVIEWING", "WAITING", "OFFER"];
+const submittedStatuses = ["APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
+const opportunityStatusFlow = ["TO APPLY", "APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
 const opportunityStatusAction = {
   "TO APPLY": "P0",
   APPLIED: "P1",
   "WRITTEN TEST": "P1",
+  SCREENING: "P2",
   INTERVIEWING: "P1",
   WAITING: "P2",
   OFFER: "P3",
@@ -20,18 +21,21 @@ const opportunityStatusNextAction = {
   "TO APPLY": "补齐材料后投递",
   APPLIED: "三天后跟进投递结果",
   "WRITTEN TEST": "完成笔试并记录结果",
+  SCREENING: "等待筛选结果",
   INTERVIEWING: "准备下一轮面试",
   WAITING: "等待反馈并定期跟进",
   OFFER: "整理 offer 对比和入职材料",
 };
 
 const dayMs = 24 * 60 * 60 * 1000;
+const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 const actionPriorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
 const actionByRank = ["P0", "P1", "P2", "P3"];
 const baseActionRank = {
   "TO APPLY": 1,
   APPLIED: 1,
   "WRITTEN TEST": 1,
+  SCREENING: 2,
   INTERVIEWING: 1,
   WAITING: 2,
   OFFER: 3,
@@ -74,6 +78,59 @@ const getOpportunityDaysUntilDue = (opportunity) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return Math.ceil((due.getTime() - today.getTime()) / dayMs);
+};
+
+const startOfDay = (date) => {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+};
+
+const parseDateLike = (value = "", now = new Date()) => {
+  const text = String(value).trim();
+  if (!text || /^next$/i.test(text)) return null;
+  if (/^(now|today)$/i.test(text)) return now;
+  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
+  if (cnDateMatch) return new Date(now.getFullYear(), Number(cnDateMatch[1]) - 1, Number(cnDateMatch[2]));
+  const parsedDate = new Date(text);
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+};
+
+const getCurrentWeekStart = (now = new Date()) => {
+  const start = startOfDay(now);
+  const daysSinceMonday = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - daysSinceMonday);
+  return start;
+};
+
+const getWeeklyWindow = (weeklyPlan, now = new Date()) => {
+  const currentWeekStart = getCurrentWeekStart(now);
+  const planStart = weeklyPlan?.weekStart ? startOfDay(parseDateLike(weeklyPlan.weekStart, now) ?? currentWeekStart) : currentWeekStart;
+  const planEnd = new Date(planStart.getTime() + 7 * dayMs);
+  const start = now >= planStart && now < planEnd ? planStart : currentWeekStart;
+  return { start, end: new Date(start.getTime() + 7 * dayMs) };
+};
+
+const getSubmittedAt = (opportunity, now = new Date()) => {
+  if (!submittedStatuses.includes(opportunity.status)) return null;
+  return (
+    opportunity.timeline
+      .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
+      .map((event) => parseDateLike(event.occurredAt, now))
+      .filter(Boolean)
+      .sort((left, right) => left.getTime() - right.getTime())[0] ?? null
+  );
+};
+
+const selectWeeklySubmittedApplications = (opportunities, weeklyPlan) => {
+  const now = new Date();
+  const { start, end } = getWeeklyWindow(weeklyPlan, now);
+  return opportunities.filter((opportunity) => {
+    const submittedAt = getSubmittedAt(opportunity, now);
+    return submittedAt !== null && submittedAt >= start && submittedAt < end;
+  }).length;
 };
 
 const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match = "MEDIUM", priority = "B" }) => {
@@ -179,14 +236,21 @@ const buildOpportunityPipeline = (opportunity, sessions) => {
     },
     {
       key: "written-test",
-      label: "笔试",
+      label: "准备笔试",
       state: stageState("WRITTEN TEST", true),
       detail: hasWrittenTest ? "已记录笔试或测评节点" : "不是每个岗位都有，未出现时可跳过",
       source: hasWrittenTest ? "manual" : "system",
     },
     {
+      key: "screening",
+      label: "筛选中",
+      state: stageState("SCREENING"),
+      detail: opportunity.status === "SCREENING" ? opportunity.nextAction : "笔试或投递后等待筛选反馈",
+      source: "system",
+    },
+    {
       key: "interview",
-      label: "约面",
+      label: "准备面试",
       state: stageState("INTERVIEWING"),
       detail: hasInterview ? (sessions.length > 0 ? `${sessions.length} 场面试已关联` : "已进入面试/等结果阶段") : "添加面试复盘后自动推进到这里",
       source: sessions.length > 0 ? "system" : "manual",
@@ -285,17 +349,25 @@ const toInterviewSession = (row, sourceFiles = [], qaPairs = []) => ({
   qaPairs,
 });
 
+const normalizeAnswerStatus = (status = "") => (status === "DRAFT" ? "DRAFT" : "ACTIVE");
+
+const normalizeAnswerPracticeStatus = (practiceStatus = "", status = "") => {
+  if (practiceStatus === "薄弱" || status === "NEEDS PRACTICE" || practiceStatus === "练习中") return "薄弱";
+  if (practiceStatus === "熟练" || practiceStatus === "可复用") return "熟练";
+  return "中等";
+};
+
 const toAnswerCard = (row) => ({
   id: row.id,
   question: row.question,
   type: row.type,
-  status: row.status,
+  status: normalizeAnswerStatus(row.status),
   source: row.source,
   sourceQaPairId: row.source_qa_pair_id ?? undefined,
   framework: row.framework,
   answer: row.answer,
   relatedRoles: row.related_roles,
-  practiceStatus: row.practice_status,
+  practiceStatus: normalizeAnswerPracticeStatus(row.practice_status, row.status),
 });
 
 const toResumeVersion = (row, linkedOpportunityIds = []) => ({
@@ -669,9 +741,9 @@ const seedDatabase = (db) => {
   ].forEach((item) => insertQa.run(...item, createdAt, createdAt));
 
   [
-    ["AC-101", "如何讲清楚项目结果？", "PROJECT", "NEEDS PRACTICE", "面试复盘", "背景 -> 目标 -> 动作 -> 指标 -> 复盘", "先说明项目背景和目标，再给出你负责的动作，最后用指标证明结果。重点是避免只说“做了优化”，要说优化前后差异。", "前端 / 全栈 / 技术产品", "练习中"],
-    ["AC-102", "如何回答职业动机？", "HR", "DRAFT", "手动创建", "触发经历 -> 能力迁移 -> 岗位匹配 -> 短期计划", "我不是放弃技术，而是希望把技术理解用于更前置的业务判断。短期会补齐行业分析和指标体系。", "产品 / 策略 / 运营", "未练习"],
-    ["AC-103", "如何解释技术选型？", "TECHNICAL", "ACTIVE", "JD 准备", "场景复杂度 -> 团队协作 -> 调试成本 -> 长期维护", "我会先看状态范围和更新频率，再判断团队协作、调试能力和持久化需求，不为了工具而工具。", "前端 / 全栈", "可复用"],
+    ["AC-101", "如何讲清楚项目结果？", "PROJECT", "ACTIVE", "面试复盘", "背景 -> 目标 -> 动作 -> 指标 -> 复盘", "先说明项目背景和目标，再给出你负责的动作，最后用指标证明结果。重点是避免只说“做了优化”，要说优化前后差异。", "前端 / 全栈 / 技术产品", "薄弱"],
+    ["AC-102", "如何回答职业动机？", "HR", "DRAFT", "手动创建", "触发经历 -> 能力迁移 -> 岗位匹配 -> 短期计划", "我不是放弃技术，而是希望把技术理解用于更前置的业务判断。短期会补齐行业分析和指标体系。", "产品 / 策略 / 运营", "中等"],
+    ["AC-103", "如何解释技术选型？", "TECHNICAL", "ACTIVE", "手动创建", "场景复杂度 -> 团队协作 -> 调试成本 -> 长期维护", "我会先看状态范围和更新频率，再判断团队协作、调试能力和持久化需求，不为了工具而工具。", "前端 / 全栈", "熟练"],
   ].forEach((item) => insertAnswer.run(...item, createdAt, createdAt));
 
   [
@@ -1120,13 +1192,13 @@ export const createRepository = (db) => {
       id,
       input.question?.trim() || "未命名答案卡",
       input.type?.trim() || "MANUAL",
-      input.status || "DRAFT",
+      normalizeAnswerStatus(input.status || "DRAFT"),
       input.source?.trim() || "手动创建",
       input.sourceQaPairId ?? null,
       input.framework?.trim() || "背景 -> 动作 -> 结果 -> 复盘",
       input.answer?.trim() || "在这里补充可复用回答。",
       input.relatedRoles?.trim() || "待填写",
-      input.practiceStatus?.trim() || "未练习",
+      normalizeAnswerPracticeStatus(input.practiceStatus?.trim(), input.status || "DRAFT"),
       timestamp,
       timestamp,
     );
@@ -1150,13 +1222,13 @@ export const createRepository = (db) => {
     return createAnswer({
       question: row.question,
       type: row.type,
-      status: row.weak ? "NEEDS PRACTICE" : "DRAFT",
+      status: "ACTIVE",
       source: "面试复盘",
       sourceQaPairId: qaPairId,
       framework: row.framework,
       answer: row.optimized_answer,
       relatedRoles: row.role,
-      practiceStatus: row.weak ? "练习中" : "未练习",
+      practiceStatus: row.weak ? "薄弱" : "中等",
     });
   };
 
@@ -1182,12 +1254,12 @@ export const createRepository = (db) => {
     `).run(
       next.question,
       next.type,
-      next.status,
+      normalizeAnswerStatus(next.status),
       next.source,
       next.framework,
       next.answer,
       next.relatedRoles,
-      next.practiceStatus,
+      normalizeAnswerPracticeStatus(next.practiceStatus, next.status),
       nowIso(),
       id,
     );
@@ -1302,6 +1374,7 @@ export const createRepository = (db) => {
       .map(toWeeklyTask);
 
     return {
+      weekStart: plan.week_start,
       targetApplications: plan.target_applications,
       focusDirections: parseJson(plan.focus_directions_json),
       focusCities: parseJson(plan.focus_cities_json),
@@ -1412,7 +1485,7 @@ export const createRepository = (db) => {
     const interviews = listInterviews();
     const weeklyPlan = getCurrentWeeklyPlan();
     const opportunityActions = opportunities.map(resolveOpportunityAction);
-    const submittedApplications = opportunities.filter((item) => submittedStatuses.includes(item.status)).length;
+    const submittedApplications = selectWeeklySubmittedApplications(opportunities, weeklyPlan);
     const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
     const pendingReviewCount = interviews.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
     const toApplyCount = opportunities.filter((item) => item.status === "TO APPLY").length;
@@ -1497,25 +1570,7 @@ export const createRepository = (db) => {
         ...weeklyRoute(task),
       }));
 
-    const openAnswerTaskIds = new Set(
-      (weeklyPlan?.tasks ?? [])
-        .filter((task) => task.status === "open" && task.source === "answer" && task.relatedEntityId)
-        .map((task) => task.relatedEntityId),
-    );
-    const answerActions = answers
-      .filter((card) => card.status === "NEEDS PRACTICE" && !openAnswerTaskIds.has(card.id))
-      .map((card) => ({
-        level: "P2",
-        title: `练习答案：${card.question}`,
-        detail: `${card.source}: ${card.practiceStatus} / 适用 ${card.relatedRoles || "待补充岗位"}`,
-        page: "answers",
-        filter: "",
-        source: "answer",
-        targetPage: "answers",
-        targetId: card.id,
-      }));
-
-    const rawActions = [...opportunityActions, ...interviewActions, ...answerActions, ...weeklyActions];
+    const rawActions = [...opportunityActions, ...interviewActions, ...weeklyActions];
     return sortTodayActions(rawActions.filter((action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index));
   };
 
@@ -1616,7 +1671,7 @@ export const createRepository = (db) => {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         planId,
-        backup.weekStart || new Date().toISOString().slice(0, 10),
+        weeklyPlan.weekStart || backup.weekStart || new Date().toISOString().slice(0, 10),
         Number(weeklyPlan.targetApplications ?? 1) || 1,
         JSON.stringify(assertArray(weeklyPlan.focusDirections ?? [], "weeklyPlan.focusDirections")),
         JSON.stringify(assertArray(weeklyPlan.focusCities ?? [], "weeklyPlan.focusCities")),

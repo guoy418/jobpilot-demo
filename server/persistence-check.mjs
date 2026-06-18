@@ -107,7 +107,7 @@ try {
     framework: "背景 -> 动作 -> 结果",
     answer: "temporary answer body",
     relatedRoles: "test",
-    practiceStatus: "未练习",
+    practiceStatus: "中等",
   });
 
   await sendJson("/api/weekly-plan/current/tasks", "POST", {

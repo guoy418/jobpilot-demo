@@ -8,7 +8,7 @@ export type Page =
   | "weekly"
   | "exports";
 
-export type OpportunityStatus = "TO APPLY" | "APPLIED" | "WRITTEN TEST" | "INTERVIEWING" | "WAITING" | "OFFER";
+export type OpportunityStatus = "TO APPLY" | "APPLIED" | "WRITTEN TEST" | "SCREENING" | "INTERVIEWING" | "WAITING" | "OFFER";
 export type OpportunityPriority = "A" | "B" | "C";
 export type OpportunityMatch = "HIGH" | "MEDIUM" | "LOW";
 export type OpportunityAction = "P0" | "P1" | "P2" | "P3";
@@ -136,13 +136,13 @@ export type AnswerCard = {
   id: string;
   question: string;
   type: string;
-  status: "DRAFT" | "ACTIVE" | "NEEDS PRACTICE";
+  status: "DRAFT" | "ACTIVE";
   source: string;
   sourceQaPairId?: string;
   framework: string;
   answer: string;
   relatedRoles: string;
-  practiceStatus: string;
+  practiceStatus: "薄弱" | "中等" | "熟练";
 };
 
 export type ResumeVersion = {
@@ -171,6 +171,7 @@ export type WeeklyTask = {
 };
 
 export type WeeklyPlan = {
+  weekStart?: string;
   targetApplications: number;
   focusDirections: string[];
   focusCities: string[];

@@ -33,6 +33,31 @@ const checks = [
   ["/api/backup", (data) => data && Array.isArray(data.opportunities) && Array.isArray(data.interviewSessions)],
 ];
 
+const getJson = async (path) => {
+  const response = await fetch(`${API_URL}${path}`);
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+  return response.json();
+};
+
+const getOpportunityTodayActions = async (opportunityId) => {
+  const actions = await getJson("/api/dashboard/today-actions");
+  return actions.filter((action) => action.source === "opportunity" && action.targetId === opportunityId);
+};
+
+const expectOpportunityTodayAction = async (opportunityId, label, validate = () => true) => {
+  const matches = await getOpportunityTodayActions(opportunityId);
+  if (!matches.some(validate)) {
+    throw new Error(`${label} should create opportunity today action`);
+  }
+};
+
+const expectNoOpportunityTodayAction = async (opportunityId, label) => {
+  const matches = await getOpportunityTodayActions(opportunityId);
+  if (matches.length > 0) {
+    throw new Error(`${label} should not create opportunity today action`);
+  }
+};
+
 for (const [path, validate] of checks) {
   const response = await fetch(`${API_URL}${path}`);
   if (!response.ok) {
@@ -814,6 +839,7 @@ await withMockAiServer(
 );
 
 const existingResumes = await fetch(`${API_URL}/api/resumes`).then((response) => response.json());
+const dashboardBeforeTempOpportunity = await fetch(`${API_URL}/api/dashboard/summary`).then((response) => response.json());
 const tempOpportunity = {
   id: `OP-CHECK-${Date.now()}`,
   title: "API check temporary opportunity",
@@ -884,7 +910,11 @@ console.log("PASS GET /api/opportunities/:id/timeline");
 const fetchedPipeline = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/pipeline`);
 if (!fetchedPipeline.ok) throw new Error(`GET /api/opportunities/:id/pipeline returned ${fetchedPipeline.status}`);
 const fetchedPipelinePayload = await fetchedPipeline.json();
-if (!Array.isArray(fetchedPipelinePayload) || fetchedPipelinePayload.length !== 6 || !fetchedPipelinePayload.some((stage) => stage.state === "current")) {
+if (
+  !Array.isArray(fetchedPipelinePayload) ||
+  !fetchedPipelinePayload.some((stage) => stage.key === "screening" && stage.label === "筛选中") ||
+  !fetchedPipelinePayload.some((stage) => stage.state === "current")
+) {
   throw new Error("GET /api/opportunities/:id/pipeline returned unexpected payload");
 }
 console.log("PASS GET /api/opportunities/:id/pipeline");
@@ -900,6 +930,13 @@ if (updatedOpportunityPayload.priority !== "A" || updatedOpportunityPayload.next
   throw new Error("PATCH /api/opportunities/:id did not update opportunity");
 }
 console.log("PASS PATCH /api/opportunities/:id");
+
+await expectOpportunityTodayAction(
+  tempOpportunity.id,
+  "TO APPLY opportunity",
+  (action) => action.title.includes("投递") && action.page === "opportunityDetail",
+);
+console.log("PASS TO APPLY opportunity creates today action");
 
 const progressedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
   method: "POST",
@@ -919,6 +956,14 @@ if (progressedOpportunityPayload.status !== "APPLIED" || progressedOpportunityPa
   throw new Error("POST /api/opportunities/:id/progress did not update progress");
 }
 console.log("PASS POST /api/opportunities/:id/progress");
+await expectNoOpportunityTodayAction(tempOpportunity.id, "APPLIED opportunity");
+console.log("PASS completing TO APPLY today action advances to APPLIED");
+
+const dashboardAfterAppliedProgress = await fetch(`${API_URL}/api/dashboard/summary`).then((response) => response.json());
+if (dashboardAfterAppliedProgress.submittedApplications !== dashboardBeforeTempOpportunity.submittedApplications + 1) {
+  throw new Error("POST /api/opportunities/:id/progress did not increment weekly submitted applications");
+}
+console.log("PASS dashboard weekly submitted applications");
 
 const weeklyPlanAfterProgress = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
 const followupTasksAfterProgress = weeklyPlanAfterProgress.tasks.filter(
@@ -950,6 +995,53 @@ if (followupTasksAfterRepeatedProgress.length !== 0) {
 }
 console.log("PASS POST /api/opportunities/:id/progress without follow-up task");
 
+const writtenTestProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "WRITTEN TEST",
+    timelineEvent: {
+      title: "API check written test",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!writtenTestProgress.ok) throw new Error(`written test POST /api/opportunities/:id/progress returned ${writtenTestProgress.status}`);
+const writtenTestOpportunity = await writtenTestProgress.json();
+if (writtenTestOpportunity.status !== "WRITTEN TEST") {
+  throw new Error("POST /api/opportunities/:id/progress did not update status to WRITTEN TEST");
+}
+await expectOpportunityTodayAction(
+  tempOpportunity.id,
+  "WRITTEN TEST opportunity",
+  (action) => action.title.includes("笔试") && action.page === "opportunityDetail",
+);
+console.log("PASS manual WRITTEN TEST creates today action");
+
+const screeningProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "SCREENING",
+    timelineEvent: {
+      title: "API check screening",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!screeningProgress.ok) throw new Error(`screening POST /api/opportunities/:id/progress returned ${screeningProgress.status}`);
+const screeningOpportunity = await screeningProgress.json();
+if (screeningOpportunity.status !== "SCREENING") {
+  throw new Error("POST /api/opportunities/:id/progress did not update status to SCREENING");
+}
+const todayActionsAfterScreening = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (todayActionsAfterScreening.some((action) => action.source === "opportunity" && action.targetId === tempOpportunity.id)) {
+  throw new Error("SCREENING opportunity should not create opportunity today action");
+}
+console.log("PASS completing WRITTEN TEST today action advances to SCREENING");
+
 const interviewingProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -963,6 +1055,37 @@ const interviewingProgress = await fetch(`${API_URL}/api/opportunities/${encodeU
   }),
 });
 if (!interviewingProgress.ok) throw new Error(`interviewing POST /api/opportunities/:id/progress returned ${interviewingProgress.status}`);
+const interviewingOpportunity = await interviewingProgress.json();
+if (interviewingOpportunity.status !== "INTERVIEWING") {
+  throw new Error("POST /api/opportunities/:id/progress did not update status to INTERVIEWING");
+}
+await expectOpportunityTodayAction(
+  tempOpportunity.id,
+  "INTERVIEWING opportunity",
+  (action) => action.title.includes("准备") && action.page === "opportunityDetail",
+);
+console.log("PASS manual INTERVIEWING creates today action");
+
+const waitingProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "WAITING",
+    timelineEvent: {
+      title: "API check waiting",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!waitingProgress.ok) throw new Error(`waiting POST /api/opportunities/:id/progress returned ${waitingProgress.status}`);
+const waitingOpportunity = await waitingProgress.json();
+if (waitingOpportunity.status !== "WAITING") {
+  throw new Error("POST /api/opportunities/:id/progress did not update status to WAITING");
+}
+await expectNoOpportunityTodayAction(tempOpportunity.id, "WAITING opportunity");
+console.log("PASS completing INTERVIEWING today action advances to WAITING");
+
 const linkedInterview = {
   id: `INT-CHECK-LINKED-${Date.now()}`,
   opportunityId: tempOpportunity.id,
@@ -1002,13 +1125,66 @@ const deletedLinkedInterview = await fetch(`${API_URL}/api/interviews/${encodeUR
 if (!deletedLinkedInterview.ok) throw new Error(`DELETE linked /api/interviews/:id returned ${deletedLinkedInterview.status}`);
 console.log("PASS POST linked /api/interviews advances opportunity");
 
+const offerProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "OFFER",
+    timelineEvent: {
+      title: "API check offer",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!offerProgress.ok) throw new Error(`offer POST /api/opportunities/:id/progress returned ${offerProgress.status}`);
+const offerOpportunity = await offerProgress.json();
+if (offerOpportunity.status !== "OFFER") {
+  throw new Error("POST /api/opportunities/:id/progress did not update status to OFFER");
+}
+await expectNoOpportunityTodayAction(tempOpportunity.id, "OFFER opportunity");
+console.log("PASS OFFER opportunity does not create today action");
+
 const deletedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, { method: "DELETE" });
 if (!deletedOpportunity.ok) throw new Error(`DELETE /api/opportunities/:id returned ${deletedOpportunity.status}`);
 const weeklyPlanAfterOpportunityDelete = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
 if (weeklyPlanAfterOpportunityDelete.tasks.some((task) => task.source === "opportunity" && task.relatedEntityId === tempOpportunity.id)) {
   throw new Error("DELETE /api/opportunities/:id did not remove opportunity follow-up tasks");
 }
+const dashboardAfterOpportunityDelete = await fetch(`${API_URL}/api/dashboard/summary`).then((response) => response.json());
+if (dashboardAfterOpportunityDelete.submittedApplications !== dashboardBeforeTempOpportunity.submittedApplications) {
+  throw new Error("DELETE /api/opportunities/:id did not remove weekly submitted application");
+}
 console.log("PASS DELETE /api/opportunities/:id");
+
+const oldSubmittedOpportunity = {
+  ...tempOpportunity,
+  id: `OP-CHECK-OLD-${Date.now()}`,
+  status: "APPLIED",
+  nextAction: "old submitted action",
+  timeline: [
+    {
+      id: `TL-CHECK-OLD-${Date.now()}`,
+      occurredAt: "2000-01-01",
+      title: "API check old applied",
+      detail: "old submitted application outside the current week",
+      status: "done",
+    },
+  ],
+};
+const createdOldSubmittedOpportunity = await fetch(`${API_URL}/api/opportunities`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(oldSubmittedOpportunity),
+});
+if (!createdOldSubmittedOpportunity.ok) throw new Error(`POST old submitted /api/opportunities returned ${createdOldSubmittedOpportunity.status}`);
+const dashboardAfterOldSubmittedOpportunity = await fetch(`${API_URL}/api/dashboard/summary`).then((response) => response.json());
+if (dashboardAfterOldSubmittedOpportunity.submittedApplications !== dashboardBeforeTempOpportunity.submittedApplications) {
+  throw new Error("dashboard weekly submitted applications counted an old submitted opportunity");
+}
+const deletedOldSubmittedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(oldSubmittedOpportunity.id)}`, { method: "DELETE" });
+if (!deletedOldSubmittedOpportunity.ok) throw new Error(`DELETE old submitted /api/opportunities/:id returned ${deletedOldSubmittedOpportunity.status}`);
+console.log("PASS dashboard ignores old submitted applications");
 
 const tempAnswer = {
   id: `AC-CHECK-${Date.now()}`,
@@ -1019,7 +1195,7 @@ const tempAnswer = {
   framework: "背景 -> 动作 -> 结果",
   answer: "temporary",
   relatedRoles: "test",
-  practiceStatus: "未练习",
+  practiceStatus: "中等",
 };
 
 const created = await fetch(`${API_URL}/api/answers`, {
@@ -1035,20 +1211,20 @@ console.log("PASS POST /api/answers");
 const updated = await fetch(`${API_URL}/api/answers/${encodeURIComponent(tempAnswer.id)}`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ practiceStatus: "练习中", status: "NEEDS PRACTICE" }),
+  body: JSON.stringify({ practiceStatus: "薄弱", status: "ACTIVE" }),
 });
 if (!updated.ok) throw new Error(`PATCH /api/answers/:id returned ${updated.status}`);
 const updatedAnswer = await updated.json();
-if (updatedAnswer.practiceStatus !== "练习中" || updatedAnswer.status !== "NEEDS PRACTICE") {
+if (updatedAnswer.practiceStatus !== "薄弱" || updatedAnswer.status !== "ACTIVE") {
   throw new Error("PATCH /api/answers/:id did not update practice state");
 }
 console.log("PASS PATCH /api/answers/:id");
 
 const answerTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
-if (!answerTodayActions.some((action) => action.source === "answer" && action.targetId === tempAnswer.id && action.page === "answers")) {
-  throw new Error("/api/dashboard/today-actions did not include direct answer practice action");
+if (answerTodayActions.some((action) => action.targetId === tempAnswer.id && action.source === "answer")) {
+  throw new Error("/api/dashboard/today-actions should not include direct answer practice action");
 }
-console.log("PASS answer-derived today action");
+console.log("PASS answer card does not directly create today action");
 
 const answerLinkedTask = {
   id: `WT-CHECK-ANSWER-${Date.now()}`,
@@ -1066,6 +1242,31 @@ const createdAnswerLinkedTask = await fetch(`${API_URL}/api/weekly-plan/current/
   body: JSON.stringify(answerLinkedTask),
 });
 if (!createdAnswerLinkedTask.ok) throw new Error(`POST answer-linked weekly task returned ${createdAnswerLinkedTask.status}`);
+const answerTaskTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (
+  !answerTaskTodayActions.some(
+    (action) => action.source === "weekly" && action.targetId === tempAnswer.id && action.taskId === answerLinkedTask.id && action.page === "answers",
+  )
+) {
+  throw new Error("/api/dashboard/today-actions did not include answer-linked training task");
+}
+console.log("PASS answer training task creates today action");
+
+const completedAnswerLinkedTask = await fetch(`${API_URL}/api/weekly-tasks/${encodeURIComponent(answerLinkedTask.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ status: "done" }),
+});
+if (!completedAnswerLinkedTask.ok) throw new Error(`PATCH answer-linked weekly task returned ${completedAnswerLinkedTask.status}`);
+const answerTaskTodayActionsAfterDone = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (answerTaskTodayActionsAfterDone.some((action) => action.source === "weekly" && action.taskId === answerLinkedTask.id)) {
+  throw new Error("completed answer-linked training task should not appear in today actions");
+}
+const answerAfterCompletedTask = (await fetch(`${API_URL}/api/answers`).then((response) => response.json())).find((answer) => answer.id === tempAnswer.id);
+if (answerAfterCompletedTask?.status !== "ACTIVE" || answerAfterCompletedTask?.practiceStatus !== "薄弱") {
+  throw new Error("completing answer-linked training task should not change answer card practice state");
+}
+console.log("PASS completed answer training task disappears without changing answer state");
 
 const deleted = await fetch(`${API_URL}/api/answers/${encodeURIComponent(tempAnswer.id)}`, { method: "DELETE" });
 if (!deleted.ok) throw new Error(`DELETE /api/answers/:id returned ${deleted.status}`);
@@ -1122,6 +1323,11 @@ if (!createdTask.ok) throw new Error(`POST /api/weekly-plan/current/tasks return
 const createdWeeklyTask = await createdTask.json();
 if (createdWeeklyTask.id !== tempTask.id || createdWeeklyTask.level !== "P1") throw new Error("POST /api/weekly-plan/current/tasks returned unexpected task");
 console.log("PASS POST /api/weekly-plan/current/tasks");
+const weeklyTaskTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (!weeklyTaskTodayActions.some((action) => action.source === "weekly" && action.taskId === tempTask.id && action.page === "weekly")) {
+  throw new Error("open weekly task should appear in today actions");
+}
+console.log("PASS open weekly task creates today action");
 
 const updatedTask = await fetch(`${API_URL}/api/weekly-tasks/${encodeURIComponent(tempTask.id)}`, {
   method: "PATCH",
@@ -1132,6 +1338,16 @@ if (!updatedTask.ok) throw new Error(`PATCH /api/weekly-tasks/:id returned ${upd
 const updatedWeeklyTask = await updatedTask.json();
 if (updatedWeeklyTask.status !== "done" || updatedWeeklyTask.level !== "P0") throw new Error("PATCH /api/weekly-tasks/:id did not update status/level");
 console.log("PASS PATCH /api/weekly-tasks/:id");
+const completedWeeklyTaskTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (completedWeeklyTaskTodayActions.some((action) => action.source === "weekly" && action.taskId === tempTask.id)) {
+  throw new Error("completed weekly task should not appear in today actions");
+}
+const weeklyPlanAfterTaskDone = await fetch(`${API_URL}/api/weekly-plan/current`).then((response) => response.json());
+const completedWeeklyTask = weeklyPlanAfterTaskDone.tasks.find((task) => task.id === tempTask.id);
+if (completedWeeklyTask?.status !== "done") {
+  throw new Error("completed weekly task should remain stored as done");
+}
+console.log("PASS completed weekly task disappears from today actions");
 
 const deletedTask = await fetch(`${API_URL}/api/weekly-tasks/${encodeURIComponent(tempTask.id)}`, { method: "DELETE" });
 if (!deletedTask.ok) throw new Error(`DELETE /api/weekly-tasks/:id returned ${deletedTask.status}`);
@@ -1225,6 +1441,27 @@ if (createdInterviewPayload.id !== tempInterview.id || createdInterviewPayload.q
   throw new Error("POST /api/interviews returned unexpected interview");
 }
 console.log("PASS POST /api/interviews");
+const interviewTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (
+  !interviewTodayActions.some(
+    (action) => action.source === "interview" && action.targetId === tempInterview.id && action.detail.includes("1 个薄弱回答需要处理"),
+  )
+) {
+  throw new Error("weak interview QA should create pending review today action");
+}
+console.log("PASS weak interview QA creates pending review action");
+
+const clearedOriginalQa = await fetch(`${API_URL}/api/qa-pairs/${encodeURIComponent(tempInterview.qaPairs[0].id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ weak: false }),
+});
+if (!clearedOriginalQa.ok) throw new Error(`PATCH original /api/qa-pairs/:id returned ${clearedOriginalQa.status}`);
+const interviewTodayActionsAfterOriginalClear = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (interviewTodayActionsAfterOriginalClear.some((action) => action.source === "interview" && action.targetId === tempInterview.id)) {
+  throw new Error("interview without weak QA should not create pending review today action");
+}
+console.log("PASS cleared interview QA removes pending review action");
 
 const fetchedInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(tempInterview.id)}`);
 if (!fetchedInterview.ok) throw new Error(`GET /api/interviews/:id returned ${fetchedInterview.status}`);
@@ -1269,7 +1506,8 @@ const answerFromQaPayload = await answerFromQa.json();
 if (
   answerFromQaPayload.question !== extraQa.question ||
   answerFromQaPayload.sourceQaPairId !== extraQa.id ||
-  answerFromQaPayload.status !== "NEEDS PRACTICE"
+  answerFromQaPayload.status !== "ACTIVE" ||
+  answerFromQaPayload.practiceStatus !== "薄弱"
 ) {
   throw new Error("POST /api/qa-pairs/:id/create-answer-card returned unexpected answer card");
 }
@@ -1292,6 +1530,11 @@ if (!updatedQa.ok) throw new Error(`PATCH /api/qa-pairs/:id returned ${updatedQa
 const updatedQaPayload = await updatedQa.json();
 if (updatedQaPayload.weak !== false || updatedQaPayload.critique !== "updated") throw new Error("PATCH /api/qa-pairs/:id did not update QA pair");
 console.log("PASS PATCH /api/qa-pairs/:id");
+const interviewTodayActionsAfterExtraClear = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (interviewTodayActionsAfterExtraClear.some((action) => action.source === "interview" && action.targetId === tempInterview.id)) {
+  throw new Error("interview should leave today actions after all weak QA are handled");
+}
+console.log("PASS handled interview QA removes today action");
 
 const interviewLinkedTask = {
   id: `WT-CHECK-INTERVIEW-${Date.now()}`,

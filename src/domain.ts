@@ -13,8 +13,9 @@ import type {
 export const statusLabel: Record<OpportunityStatus, string> = {
   "TO APPLY": "待投递",
   APPLIED: "已投递",
-  "WRITTEN TEST": "笔试",
-  INTERVIEWING: "面试中",
+  "WRITTEN TEST": "准备笔试",
+  SCREENING: "筛选中",
+  INTERVIEWING: "准备面试",
   WAITING: "等结果",
   OFFER: "Offer",
 };
@@ -26,13 +27,14 @@ export const sourceKindLabel: Record<SourceAsset["kind"], string> = {
   "referral-note": "内推记录",
 };
 
-export const submittedStatuses: OpportunityStatus[] = ["APPLIED", "WRITTEN TEST", "INTERVIEWING", "WAITING", "OFFER"];
-export const opportunityStatusFlow: OpportunityStatus[] = ["TO APPLY", "APPLIED", "WRITTEN TEST", "INTERVIEWING", "WAITING", "OFFER"];
+export const submittedStatuses: OpportunityStatus[] = ["APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
+export const opportunityStatusFlow: OpportunityStatus[] = ["TO APPLY", "APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
 
 export const opportunityStatusAction: Record<OpportunityStatus, OpportunityAction> = {
   "TO APPLY": "P0",
   APPLIED: "P1",
   "WRITTEN TEST": "P1",
+  SCREENING: "P2",
   INTERVIEWING: "P1",
   WAITING: "P2",
   OFFER: "P3",
@@ -42,6 +44,7 @@ export const opportunityStatusNextAction: Record<OpportunityStatus, string> = {
   "TO APPLY": "补齐材料后投递",
   APPLIED: "三天后跟进投递结果",
   "WRITTEN TEST": "完成笔试并同步结果",
+  SCREENING: "等待筛选结果",
   INTERVIEWING: "准备下一轮面试",
   WAITING: "等待结果并准备复盘",
   OFFER: "整理 Offer 信息和取舍",
@@ -54,6 +57,7 @@ const baseActionRank: Record<OpportunityStatus, number> = {
   "TO APPLY": 1,
   APPLIED: 1,
   "WRITTEN TEST": 1,
+  SCREENING: 2,
   INTERVIEWING: 1,
   WAITING: 2,
   OFFER: 3,
@@ -204,14 +208,21 @@ export const buildOpportunityPipeline = (opportunity: Opportunity, sessions: Int
     },
     {
       key: "written-test",
-      label: "笔试",
+      label: "准备笔试",
       state: stageState("WRITTEN TEST", true),
       detail: hasWrittenTest ? "已记录笔试或测评节点" : "不是每个岗位都有，未出现时可跳过",
       source: hasWrittenTest ? "manual" : "system",
     },
     {
+      key: "screening",
+      label: "筛选中",
+      state: stageState("SCREENING"),
+      detail: opportunity.status === "SCREENING" ? opportunity.nextAction : "笔试或投递后等待筛选反馈",
+      source: "system",
+    },
+    {
       key: "interview",
-      label: "约面",
+      label: "准备面试",
       state: stageState("INTERVIEWING"),
       detail: hasInterview ? (sessions.length > 0 ? `${sessions.length} 场面试已关联` : "已进入面试/等结果阶段") : "添加面试复盘后自动推进到这里",
       source: sessions.length > 0 ? "system" : "manual",

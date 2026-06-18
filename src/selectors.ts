@@ -7,7 +7,7 @@ export type TodayAction = {
   detail: string;
   page: Page;
   filter: string;
-  source: "opportunity" | "interview" | "answer" | "weekly";
+  source: "opportunity" | "interview" | "weekly";
   targetId?: string;
   taskId?: string;
 };
@@ -28,9 +28,65 @@ export const selectResumeName = (resumeList: ResumeVersion[], resumeId: string) 
   resumeList.find((resume) => resume.id === resumeId)?.name ?? "未选择简历";
 
 const priorityOrder: Record<OpportunityAction, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+const dayMs = 24 * 60 * 60 * 1000;
+const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 
 export const sortTodayActions = (actions: TodayAction[]): TodayAction[] =>
   [...actions].sort((left, right) => priorityOrder[left.level] - priorityOrder[right.level]);
+
+const startOfDay = (date: Date) => {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+};
+
+const parseDateLike = (value = "", now = new Date()): Date | null => {
+  const text = value.trim();
+  if (!text || /^next$/i.test(text)) return null;
+  if (/^(now|today)$/i.test(text)) return now;
+
+  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+
+  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
+  if (cnDateMatch) return new Date(now.getFullYear(), Number(cnDateMatch[1]) - 1, Number(cnDateMatch[2]));
+
+  const parsedDate = new Date(text);
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+};
+
+const getCurrentWeekStart = (now = new Date()) => {
+  const start = startOfDay(now);
+  const daysSinceMonday = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - daysSinceMonday);
+  return start;
+};
+
+const getWeeklyWindow = (weeklyPlan: WeeklyPlan, now = new Date()) => {
+  const currentWeekStart = getCurrentWeekStart(now);
+  const planStart = weeklyPlan.weekStart ? startOfDay(parseDateLike(weeklyPlan.weekStart, now) ?? currentWeekStart) : currentWeekStart;
+  const planEnd = new Date(planStart.getTime() + 7 * dayMs);
+  const start = now >= planStart && now < planEnd ? planStart : currentWeekStart;
+  return { start, end: new Date(start.getTime() + 7 * dayMs) };
+};
+
+const getSubmittedAt = (opportunity: Opportunity, now = new Date()) => {
+  if (!submittedStatuses.includes(opportunity.status)) return null;
+  return opportunity.timeline
+    .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
+    .map((event) => parseDateLike(event.occurredAt, now))
+    .filter((date): date is Date => Boolean(date))
+    .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
+};
+
+const selectWeeklySubmittedApplications = (opportunities: Opportunity[], weeklyPlan: WeeklyPlan) => {
+  const now = new Date();
+  const { start, end } = getWeeklyWindow(weeklyPlan, now);
+  return opportunities.filter((opportunity) => {
+    const submittedAt = getSubmittedAt(opportunity, now);
+    return submittedAt !== null && submittedAt >= start && submittedAt < end;
+  }).length;
+};
 
 const weeklyActionRoute = (task: WeeklyTask): Pick<TodayAction, "page" | "targetId" | "taskId"> => {
   if (task.source === "interview" && task.relatedEntityId) return { page: "interviews", targetId: task.relatedEntityId, taskId: task.id };
@@ -45,7 +101,7 @@ export const selectDashboardSummary = (
   weeklyPlan: WeeklyPlan,
 ): DashboardSummary => {
   const opportunityActions = opportunities.map(resolveOpportunityAction);
-  const submittedApplications = opportunities.filter((item) => submittedStatuses.includes(item.status)).length;
+  const submittedApplications = selectWeeklySubmittedApplications(opportunities, weeklyPlan);
   const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
   const pendingReviewCount = interviewSessions.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
   const toApplyCount = opportunities.filter((item) => item.status === "TO APPLY").length;
@@ -71,7 +127,7 @@ export const selectDashboardSummary = (
 export const selectTodayActions = (
   opportunities: Opportunity[],
   interviewSessions: InterviewSession[],
-  answerCards: AnswerCard[],
+  _answerCards: AnswerCard[],
   weeklyPlan: WeeklyPlan,
   resumeList: ResumeVersion[],
 ): TodayAction[] => {
@@ -117,24 +173,7 @@ export const selectTodayActions = (
       ...weeklyActionRoute(task),
     }));
 
-  const openAnswerTaskIds = new Set(
-    weeklyPlan.tasks
-      .filter((task) => task.status === "open" && task.source === "answer" && task.relatedEntityId)
-      .map((task) => task.relatedEntityId),
-  );
-  const answerActionItems: TodayAction[] = answerCards
-    .filter((card) => card.status === "NEEDS PRACTICE" && !openAnswerTaskIds.has(card.id))
-    .map((card) => ({
-      level: "P2",
-      title: `练习答案：${card.question}`,
-      detail: `${card.source}: ${card.practiceStatus} / 适用 ${card.relatedRoles || "待补充岗位"}`,
-      page: "answers",
-      filter: "",
-      source: "answer",
-      targetId: card.id,
-    }));
-
-  const rawTodayActions = [...opportunityActionItems, ...interviewActionItems, ...answerActionItems, ...weeklyActionItems];
+  const rawTodayActions = [...opportunityActionItems, ...interviewActionItems, ...weeklyActionItems];
   return sortTodayActions(rawTodayActions.filter(
     (action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index,
   ));
