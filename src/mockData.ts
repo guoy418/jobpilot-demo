@@ -1,4 +1,4 @@
-import type { AnswerCard, InterviewSession, Opportunity, ResumeVersion, SessionFile, WeeklyPlan } from "./types";
+import type { AnswerCard, AnswerCategory, InterviewSession, Opportunity, ResumeVersion, SessionFile, WeeklyPlan } from "./types";
 
 const baseOpportunities: Array<Omit<Opportunity, "jdSummary" | "jdText" | "sourceAssets" | "timeline">> = [
   {
@@ -282,6 +282,54 @@ export const seedInterviewSessions: InterviewSession[] = baseInterviewSessions.m
   sourceFiles: interviewSourceFiles[session.id] ?? [],
 }));
 
+export const uncategorizedAnswerCategoryId = "CAT-UNCATEGORIZED";
+
+export const baseAnswerCategories: AnswerCategory[] = [
+  {
+    id: uncategorizedAnswerCategoryId,
+    name: "尚未归类",
+    sortOrder: 0,
+    system: true,
+  },
+  {
+    id: "CAT-BASIC",
+    name: "个人基础信息类",
+    sortOrder: 10,
+  },
+  {
+    id: "CAT-BEHAVIORAL",
+    name: "行为问题",
+    sortOrder: 20,
+  },
+  {
+    id: "CAT-MOTIVATION",
+    name: "动机相关",
+    sortOrder: 30,
+  },
+  {
+    id: "CAT-GENERAL",
+    name: "通用问题案例库",
+    sortOrder: 40,
+  },
+  {
+    id: "CAT-INTERNSHIP",
+    name: "某段实习相关",
+    sortOrder: 50,
+  },
+  {
+    id: "CAT-INTERNSHIP-PROJECTS",
+    name: "项目经历问题",
+    parentId: "CAT-INTERNSHIP",
+    sortOrder: 10,
+  },
+  {
+    id: "CAT-INTERNSHIP-DETAILS",
+    name: "业务理解/细节追问",
+    parentId: "CAT-INTERNSHIP",
+    sortOrder: 20,
+  },
+];
+
 export const baseAnswerCards: AnswerCard[] = [
   {
     id: "AC-101",
@@ -289,6 +337,7 @@ export const baseAnswerCards: AnswerCard[] = [
     type: "PROJECT",
     status: "ACTIVE",
     source: "面试复盘",
+    categoryId: "CAT-GENERAL",
     framework: "背景 -> 目标 -> 动作 -> 指标 -> 复盘",
     answer: "先说明项目背景和目标，再给出你负责的动作，最后用指标证明结果。重点是避免只说“做了优化”，要说优化前后差异。",
     relatedRoles: "前端 / 全栈 / 技术产品",
@@ -300,6 +349,7 @@ export const baseAnswerCards: AnswerCard[] = [
     type: "HR",
     status: "DRAFT",
     source: "手动创建",
+    categoryId: "CAT-MOTIVATION",
     framework: "触发经历 -> 能力迁移 -> 岗位匹配 -> 短期计划",
     answer: "我不是放弃技术，而是希望把技术理解用于更前置的业务判断。短期会补齐行业分析和指标体系。",
     relatedRoles: "产品 / 策略 / 运营",
@@ -311,6 +361,7 @@ export const baseAnswerCards: AnswerCard[] = [
     type: "TECHNICAL",
     status: "ACTIVE",
     source: "手动创建",
+    categoryId: "CAT-GENERAL",
     framework: "场景复杂度 -> 团队协作 -> 调试成本 -> 长期维护",
     answer: "我会先看状态范围和更新频率，再判断团队协作、调试能力和持久化需求，不为了工具而工具。",
     relatedRoles: "前端 / 全栈",

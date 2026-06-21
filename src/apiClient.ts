@@ -1,6 +1,6 @@
 import { apiBaseUrl, isApiEnabled } from "./appConfig";
 import type { DashboardSummary, TodayAction } from "./selectors";
-import type { AnswerCard, ComposerSourceKind, InterviewSession, Opportunity, QaPair, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
+import type { AnswerCard, AnswerCategory, ComposerSourceKind, InterviewSession, Opportunity, QaPair, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
 const assertApiEnabled = () => {
   if (!isApiEnabled) {
@@ -12,6 +12,7 @@ export type InitialApiData = {
   opportunities: Opportunity[];
   interviewSessions: InterviewSession[];
   answerCards: AnswerCard[];
+  answerCategories: AnswerCategory[];
   resumeVersions: ResumeVersion[];
   weeklyPlan: WeeklyPlan;
   dashboardSummary: DashboardSummary;
@@ -99,6 +100,15 @@ export const updateAnswerCardApi = (id: string, patch: Partial<AnswerCard>): Pro
 
 export const deleteAnswerCardApi = (id: string): Promise<{ ok: boolean; id: string }> =>
   sendJson<{ ok: boolean; id: string }>(`/api/answers/${encodeURIComponent(id)}`, "DELETE");
+
+export const createAnswerCategoryApi = (category: AnswerCategory): Promise<AnswerCategory> =>
+  sendJson<AnswerCategory>("/api/answer-categories", "POST", category);
+
+export const updateAnswerCategoryApi = (id: string, patch: Partial<AnswerCategory>): Promise<AnswerCategory> =>
+  sendJson<AnswerCategory>(`/api/answer-categories/${encodeURIComponent(id)}`, "PATCH", patch);
+
+export const deleteAnswerCategoryApi = (id: string): Promise<{ ok: boolean; id: string }> =>
+  sendJson<{ ok: boolean; id: string }>(`/api/answer-categories/${encodeURIComponent(id)}`, "DELETE");
 
 export const updateWeeklyPlanApi = (patch: Partial<Omit<WeeklyPlan, "tasks">>): Promise<WeeklyPlan> =>
   sendJson<WeeklyPlan>("/api/weekly-plan/current", "PATCH", patch);
@@ -198,10 +208,11 @@ export const parseResumeApi = (payload: ParserPayload): Promise<Record<string, s
 
 export const loadInitialApiData = async (): Promise<InitialApiData> => {
   assertApiEnabled();
-  const [opportunities, interviewSessions, answerCards, resumeVersions, weeklyPlan, dashboardSummary, todayActions] = await Promise.all([
+  const [opportunities, interviewSessions, answerCards, answerCategories, resumeVersions, weeklyPlan, dashboardSummary, todayActions] = await Promise.all([
     getJson<Opportunity[]>("/api/opportunities"),
     getJson<InterviewSession[]>("/api/interviews"),
     getJson<AnswerCard[]>("/api/answers"),
+    getJson<AnswerCategory[]>("/api/answer-categories"),
     getJson<ResumeVersion[]>("/api/resumes"),
     getJson<WeeklyPlan>("/api/weekly-plan/current"),
     getDashboardSummaryApi(),
@@ -212,6 +223,7 @@ export const loadInitialApiData = async (): Promise<InitialApiData> => {
     !Array.isArray(opportunities) ||
     !Array.isArray(interviewSessions) ||
     !Array.isArray(answerCards) ||
+    !Array.isArray(answerCategories) ||
     !Array.isArray(resumeVersions) ||
     !weeklyPlan ||
     !Array.isArray(weeklyPlan.tasks)
@@ -223,6 +235,7 @@ export const loadInitialApiData = async (): Promise<InitialApiData> => {
     opportunities,
     interviewSessions,
     answerCards,
+    answerCategories,
     resumeVersions,
     weeklyPlan,
     dashboardSummary,

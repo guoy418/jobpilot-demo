@@ -27,6 +27,18 @@ const opportunityStatusNextAction = {
   OFFER: "整理 offer 对比和入职材料",
 };
 
+const UNCATEGORIZED_ANSWER_CATEGORY_ID = "CAT-UNCATEGORIZED";
+const defaultAnswerCategories = [
+  { id: UNCATEGORIZED_ANSWER_CATEGORY_ID, name: "尚未归类", parentId: null, sortOrder: 0, system: true },
+  { id: "CAT-BASIC", name: "个人基础信息类", parentId: null, sortOrder: 10, system: false },
+  { id: "CAT-BEHAVIORAL", name: "行为问题", parentId: null, sortOrder: 20, system: false },
+  { id: "CAT-MOTIVATION", name: "动机相关", parentId: null, sortOrder: 30, system: false },
+  { id: "CAT-GENERAL", name: "通用问题案例库", parentId: null, sortOrder: 40, system: false },
+  { id: "CAT-INTERNSHIP", name: "某段实习相关", parentId: null, sortOrder: 50, system: false },
+  { id: "CAT-INTERNSHIP-PROJECTS", name: "项目经历问题", parentId: "CAT-INTERNSHIP", sortOrder: 10, system: false },
+  { id: "CAT-INTERNSHIP-DETAILS", name: "业务理解/细节追问", parentId: "CAT-INTERNSHIP", sortOrder: 20, system: false },
+];
+
 const dayMs = 24 * 60 * 60 * 1000;
 const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 const actionPriorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
@@ -357,6 +369,16 @@ const normalizeAnswerPracticeStatus = (practiceStatus = "", status = "") => {
   return "中等";
 };
 
+const normalizeAnswerCategoryId = (categoryId) => String(categoryId || "").trim() || UNCATEGORIZED_ANSWER_CATEGORY_ID;
+
+const toAnswerCategory = (row) => ({
+  id: row.id,
+  name: row.name,
+  parentId: row.parent_id ?? undefined,
+  sortOrder: row.sort_order,
+  system: Boolean(row.system),
+});
+
 const toAnswerCard = (row) => ({
   id: row.id,
   question: row.question,
@@ -364,6 +386,7 @@ const toAnswerCard = (row) => ({
   status: normalizeAnswerStatus(row.status),
   source: row.source,
   sourceQaPairId: row.source_qa_pair_id ?? undefined,
+  categoryId: normalizeAnswerCategoryId(row.category_id),
   framework: row.framework,
   answer: row.answer,
   relatedRoles: row.related_roles,
@@ -483,6 +506,16 @@ const createSchema = (db) => {
       FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS answer_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      sort_order INTEGER NOT NULL,
+      system INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS answer_cards (
       id TEXT PRIMARY KEY,
       question TEXT NOT NULL,
@@ -490,6 +523,7 @@ const createSchema = (db) => {
       status TEXT NOT NULL,
       source TEXT NOT NULL,
       source_qa_pair_id TEXT,
+      category_id TEXT,
       framework TEXT NOT NULL,
       answer TEXT NOT NULL,
       related_roles TEXT NOT NULL,
@@ -557,6 +591,27 @@ const migrateSchema = (db) => {
   ensureColumn(db, "interview_source_files", "storage_uri", "TEXT");
   ensureColumn(db, "resume_versions", "storage_uri", "TEXT");
   ensureColumn(db, "weekly_tasks", "level", "TEXT NOT NULL DEFAULT 'P2'");
+  ensureColumn(db, "answer_cards", "category_id", "TEXT");
+};
+
+const ensureDefaultAnswerCategories = (db) => {
+  const timestamp = nowIso();
+  const insertCategory = db.prepare(`
+    INSERT OR IGNORE INTO answer_categories (
+      id, name, parent_id, sort_order, system, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  defaultAnswerCategories.forEach((category) =>
+    insertCategory.run(
+      category.id,
+      category.name,
+      category.parentId,
+      category.sortOrder,
+      category.system ? 1 : 0,
+      timestamp,
+      timestamp,
+    ),
+  );
 };
 
 const seedDatabase = (db) => {
@@ -598,9 +653,9 @@ const seedDatabase = (db) => {
   `);
   const insertAnswer = db.prepare(`
     INSERT INTO answer_cards (
-      id, question, type, status, source, framework, answer, related_roles,
+      id, question, type, status, source, category_id, framework, answer, related_roles,
       practice_status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertResume = db.prepare(`
     INSERT INTO resume_versions (
@@ -741,9 +796,9 @@ const seedDatabase = (db) => {
   ].forEach((item) => insertQa.run(...item, createdAt, createdAt));
 
   [
-    ["AC-101", "如何讲清楚项目结果？", "PROJECT", "ACTIVE", "面试复盘", "背景 -> 目标 -> 动作 -> 指标 -> 复盘", "先说明项目背景和目标，再给出你负责的动作，最后用指标证明结果。重点是避免只说“做了优化”，要说优化前后差异。", "前端 / 全栈 / 技术产品", "薄弱"],
-    ["AC-102", "如何回答职业动机？", "HR", "DRAFT", "手动创建", "触发经历 -> 能力迁移 -> 岗位匹配 -> 短期计划", "我不是放弃技术，而是希望把技术理解用于更前置的业务判断。短期会补齐行业分析和指标体系。", "产品 / 策略 / 运营", "中等"],
-    ["AC-103", "如何解释技术选型？", "TECHNICAL", "ACTIVE", "手动创建", "场景复杂度 -> 团队协作 -> 调试成本 -> 长期维护", "我会先看状态范围和更新频率，再判断团队协作、调试能力和持久化需求，不为了工具而工具。", "前端 / 全栈", "熟练"],
+    ["AC-101", "如何讲清楚项目结果？", "PROJECT", "ACTIVE", "面试复盘", "CAT-GENERAL", "背景 -> 目标 -> 动作 -> 指标 -> 复盘", "先说明项目背景和目标，再给出你负责的动作，最后用指标证明结果。重点是避免只说“做了优化”，要说优化前后差异。", "前端 / 全栈 / 技术产品", "薄弱"],
+    ["AC-102", "如何回答职业动机？", "HR", "DRAFT", "手动创建", "CAT-MOTIVATION", "触发经历 -> 能力迁移 -> 岗位匹配 -> 短期计划", "我不是放弃技术，而是希望把技术理解用于更前置的业务判断。短期会补齐行业分析和指标体系。", "产品 / 策略 / 运营", "中等"],
+    ["AC-103", "如何解释技术选型？", "TECHNICAL", "ACTIVE", "手动创建", "CAT-GENERAL", "场景复杂度 -> 团队协作 -> 调试成本 -> 长期维护", "我会先看状态范围和更新频率，再判断团队协作、调试能力和持久化需求，不为了工具而工具。", "前端 / 全栈", "熟练"],
   ].forEach((item) => insertAnswer.run(...item, createdAt, createdAt));
 
   [
@@ -776,6 +831,7 @@ export const openDatabase = () => {
   const db = new DatabaseSync(DB_PATH);
   createSchema(db);
   migrateSchema(db);
+  ensureDefaultAnswerCategories(db);
   seedDatabase(db);
   return db;
 };
@@ -1173,6 +1229,95 @@ export const createRepository = (db) => {
     return true;
   };
 
+  const listAnswerCategories = () =>
+    db
+      .prepare("SELECT * FROM answer_categories ORDER BY parent_id IS NOT NULL ASC, sort_order ASC, name ASC, id ASC")
+      .all()
+      .map(toAnswerCategory);
+
+  const getAnswerCategory = (id) => {
+    const row = db.prepare("SELECT * FROM answer_categories WHERE id = ?").get(id);
+    return row ? toAnswerCategory(row) : null;
+  };
+
+  const answerCategoryExists = (id) => Boolean(db.prepare("SELECT 1 FROM answer_categories WHERE id = ?").get(id));
+
+  const resolveAnswerCategoryId = (categoryId) => {
+    const id = normalizeAnswerCategoryId(categoryId);
+    return answerCategoryExists(id) ? id : UNCATEGORIZED_ANSWER_CATEGORY_ID;
+  };
+
+  const createAnswerCategory = (input) => {
+    const timestamp = nowIso();
+    let id = input.id || makeId("CAT");
+    if (db.prepare("SELECT 1 FROM answer_categories WHERE id = ?").get(id)) {
+      id = makeId("CAT");
+    }
+    const parentId = input.parentId && answerCategoryExists(input.parentId) && input.parentId !== UNCATEGORIZED_ANSWER_CATEGORY_ID ? input.parentId : null;
+    const nextSortOrder =
+      input.sortOrder ??
+      (db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS sort_order FROM answer_categories WHERE parent_id IS ?").get(parentId).sort_order ?? 0);
+    db.prepare(`
+      INSERT INTO answer_categories (
+        id, name, parent_id, sort_order, system, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, input.name?.trim() || "新分类", parentId, Number(nextSortOrder) || 0, input.system ? 1 : 0, timestamp, timestamp);
+    return getAnswerCategory(id);
+  };
+
+  const updateAnswerCategory = (id, patch) => {
+    const current = getAnswerCategory(id);
+    if (!current) return null;
+    const nextName = current.system ? current.name : patch.name?.trim() || current.name;
+    const nextParentId =
+      current.system || patch.parentId === id
+        ? current.parentId ?? null
+        : patch.parentId && answerCategoryExists(patch.parentId) && patch.parentId !== UNCATEGORIZED_ANSWER_CATEGORY_ID
+          ? patch.parentId
+          : patch.parentId === undefined
+            ? current.parentId ?? null
+            : null;
+    db.prepare(`
+      UPDATE answer_categories
+      SET name = ?,
+          parent_id = ?,
+          sort_order = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(nextName, nextParentId, Number(patch.sortOrder ?? current.sortOrder) || 0, nowIso(), id);
+    return getAnswerCategory(id);
+  };
+
+  const collectAnswerCategoryDescendantIds = (id) => {
+    const all = listAnswerCategories();
+    const result = new Set([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      all.forEach((category) => {
+        if (category.parentId && result.has(category.parentId) && !result.has(category.id)) {
+          result.add(category.id);
+          changed = true;
+        }
+      });
+    }
+    return [...result];
+  };
+
+  const deleteAnswerCategory = (id) => {
+    const current = getAnswerCategory(id);
+    if (!current || current.system) return false;
+    const ids = collectAnswerCategoryDescendantIds(id);
+    const placeholders = ids.map(() => "?").join(",");
+    db.prepare(`UPDATE answer_cards SET category_id = ?, updated_at = ? WHERE category_id IN (${placeholders})`).run(
+      UNCATEGORIZED_ANSWER_CATEGORY_ID,
+      nowIso(),
+      ...ids,
+    );
+    db.prepare(`DELETE FROM answer_categories WHERE id IN (${placeholders})`).run(...ids);
+    return true;
+  };
+
   const listAnswers = () => db.prepare("SELECT * FROM answer_cards ORDER BY created_at DESC, id DESC").all().map(toAnswerCard);
 
   const getAnswer = (id) => {
@@ -1183,11 +1328,12 @@ export const createRepository = (db) => {
   const createAnswer = (input) => {
     const timestamp = nowIso();
     const id = input.id || makeId("AC");
+    const categoryId = resolveAnswerCategoryId(input.categoryId);
     db.prepare(`
       INSERT INTO answer_cards (
         id, question, type, status, source, source_qa_pair_id, framework, answer,
-        related_roles, practice_status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        related_roles, practice_status, category_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.question?.trim() || "未命名答案卡",
@@ -1199,6 +1345,7 @@ export const createRepository = (db) => {
       input.answer?.trim() || "在这里补充可复用回答。",
       input.relatedRoles?.trim() || "待填写",
       normalizeAnswerPracticeStatus(input.practiceStatus?.trim(), input.status || "DRAFT"),
+      categoryId,
       timestamp,
       timestamp,
     );
@@ -1249,6 +1396,7 @@ export const createRepository = (db) => {
           answer = ?,
           related_roles = ?,
           practice_status = ?,
+          category_id = ?,
           updated_at = ?
       WHERE id = ?
     `).run(
@@ -1260,6 +1408,7 @@ export const createRepository = (db) => {
       next.answer,
       next.relatedRoles,
       normalizeAnswerPracticeStatus(next.practiceStatus, next.status),
+      resolveAnswerCategoryId(next.categoryId),
       nowIso(),
       id,
     );
@@ -1605,6 +1754,7 @@ export const createRepository = (db) => {
     opportunities: listOpportunities(),
     interviewSessions: listInterviews(),
     answerCards: listAnswers(),
+    answerCategories: listAnswerCategories(),
     resumeVersions: listResumes(),
     weeklyPlan: getCurrentWeeklyPlan(),
     storedFiles: listStoredFiles(),
@@ -1615,6 +1765,7 @@ export const createRepository = (db) => {
     const opportunities = assertArray(backup?.opportunities, "opportunities");
     const interviewSessions = assertArray(backup?.interviewSessions, "interviewSessions");
     const answerCards = assertArray(backup?.answerCards, "answerCards");
+    const answerCategories = assertArray(backup?.answerCategories ?? defaultAnswerCategories, "answerCategories");
     const storedFiles = assertArray(backup?.storedFiles ?? [], "storedFiles");
     const weeklyPlan = backup?.weeklyPlan;
     if (!weeklyPlan || typeof weeklyPlan !== "object") throw new Error("Backup field weeklyPlan must be an object");
@@ -1631,6 +1782,7 @@ export const createRepository = (db) => {
         DELETE FROM opportunity_source_assets;
         DELETE FROM opportunities;
         DELETE FROM answer_cards;
+        DELETE FROM answer_categories;
         DELETE FROM resume_versions;
       `);
 
@@ -1660,6 +1812,16 @@ export const createRepository = (db) => {
         }),
       );
 
+      ensureDefaultAnswerCategories(db);
+      [...answerCategories]
+        .sort((left, right) => (left.parentId ? 1 : 0) - (right.parentId ? 1 : 0))
+        .forEach((category) => {
+        if (category.id === UNCATEGORIZED_ANSWER_CATEGORY_ID) {
+          updateAnswerCategory(category.id, { sortOrder: category.sortOrder });
+          return;
+        }
+        createAnswerCategory(category);
+      });
       answerCards.forEach((answer) => createAnswer(answer));
 
       const timestamp = nowIso();
@@ -1739,6 +1901,11 @@ export const createRepository = (db) => {
     createAnswerFromQaPair,
     updateAnswer,
     deleteAnswer,
+    listAnswerCategories,
+    getAnswerCategory,
+    createAnswerCategory,
+    updateAnswerCategory,
+    deleteAnswerCategory,
     listResumes,
     getResume,
     listResumeLinkedOpportunities,

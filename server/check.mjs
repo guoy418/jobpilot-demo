@@ -19,6 +19,7 @@ const checks = [
   ["/api/opportunities", (data) => Array.isArray(data) && data.length >= 1],
   ["/api/interviews", (data) => Array.isArray(data) && data.length >= 1],
   ["/api/answers", (data) => Array.isArray(data) && data.length >= 1],
+  ["/api/answer-categories", (data) => Array.isArray(data) && data.some((category) => category.id === "CAT-UNCATEGORIZED" && category.system === true)],
   ["/api/resumes", (data) => Array.isArray(data) && data.length >= 1],
   ["/api/weekly-plan/current", (data) => data && typeof data.targetApplications === "number"],
   ["/api/dashboard/summary", (data) => data && typeof data.opportunityCount === "number" && typeof data.pendingReviewCount === "number"],
@@ -30,7 +31,7 @@ const checks = [
       data.every((action) => action.page && action.filter !== undefined && action.source && action.level) &&
       data.every((action, index, actions) => index === 0 || ["P0", "P1", "P2", "P3"].indexOf(actions[index - 1].level) <= ["P0", "P1", "P2", "P3"].indexOf(action.level)),
   ],
-  ["/api/backup", (data) => data && Array.isArray(data.opportunities) && Array.isArray(data.interviewSessions)],
+  ["/api/backup", (data) => data && Array.isArray(data.opportunities) && Array.isArray(data.interviewSessions) && Array.isArray(data.answerCategories)],
 ];
 
 const getJson = async (path) => {
@@ -1220,6 +1221,55 @@ if (updatedAnswer.practiceStatus !== "薄弱" || updatedAnswer.status !== "ACTIV
 }
 console.log("PASS PATCH /api/answers/:id");
 
+const tempCategory = {
+  id: `CAT-CHECK-${Date.now()}`,
+  name: "API check answer category",
+  sortOrder: 999,
+};
+const createdCategory = await fetch(`${API_URL}/api/answer-categories`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(tempCategory),
+});
+if (!createdCategory.ok) throw new Error(`POST /api/answer-categories returned ${createdCategory.status}`);
+const createdCategoryPayload = await createdCategory.json();
+if (createdCategoryPayload.id !== tempCategory.id || createdCategoryPayload.system) {
+  throw new Error("POST /api/answer-categories returned unexpected category");
+}
+console.log("PASS POST /api/answer-categories");
+
+const renamedCategory = await fetch(`${API_URL}/api/answer-categories/${encodeURIComponent(tempCategory.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "API check renamed category" }),
+});
+if (!renamedCategory.ok) throw new Error(`PATCH /api/answer-categories/:id returned ${renamedCategory.status}`);
+const renamedCategoryPayload = await renamedCategory.json();
+if (renamedCategoryPayload.name !== "API check renamed category") {
+  throw new Error("PATCH /api/answer-categories/:id did not rename category");
+}
+console.log("PASS PATCH /api/answer-categories/:id");
+
+const movedAnswer = await fetch(`${API_URL}/api/answers/${encodeURIComponent(tempAnswer.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ categoryId: tempCategory.id }),
+});
+if (!movedAnswer.ok) throw new Error(`PATCH /api/answers/:id category returned ${movedAnswer.status}`);
+const movedAnswerPayload = await movedAnswer.json();
+if (movedAnswerPayload.categoryId !== tempCategory.id) {
+  throw new Error("PATCH /api/answers/:id did not move answer category");
+}
+console.log("PASS PATCH /api/answers/:id category");
+
+const deletedCategory = await fetch(`${API_URL}/api/answer-categories/${encodeURIComponent(tempCategory.id)}`, { method: "DELETE" });
+if (!deletedCategory.ok) throw new Error(`DELETE /api/answer-categories/:id returned ${deletedCategory.status}`);
+const answerAfterCategoryDelete = (await fetch(`${API_URL}/api/answers`).then((response) => response.json())).find((answer) => answer.id === tempAnswer.id);
+if (answerAfterCategoryDelete?.categoryId !== "CAT-UNCATEGORIZED") {
+  throw new Error("DELETE /api/answer-categories/:id did not move answers to uncategorized");
+}
+console.log("PASS DELETE /api/answer-categories/:id moves answers");
+
 const answerTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
 if (answerTodayActions.some((action) => action.targetId === tempAnswer.id && action.source === "answer")) {
   throw new Error("/api/dashboard/today-actions should not include direct answer practice action");
@@ -1507,7 +1557,8 @@ if (
   answerFromQaPayload.question !== extraQa.question ||
   answerFromQaPayload.sourceQaPairId !== extraQa.id ||
   answerFromQaPayload.status !== "ACTIVE" ||
-  answerFromQaPayload.practiceStatus !== "薄弱"
+  answerFromQaPayload.practiceStatus !== "薄弱" ||
+  answerFromQaPayload.categoryId !== "CAT-UNCATEGORIZED"
 ) {
   throw new Error("POST /api/qa-pairs/:id/create-answer-card returned unexpected answer card");
 }

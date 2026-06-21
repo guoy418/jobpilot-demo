@@ -4,16 +4,20 @@ import {
   BriefcaseBusiness,
   CalendarClock,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
   FileAudio,
   FileDown,
   FileText,
+  Folder,
+  FolderOpen,
   Home,
   KanbanSquare,
   Library,
   Moon,
+  Pencil,
   PanelRight,
   Plus,
   RotateCcw,
@@ -22,10 +26,11 @@ import {
   Settings,
   Sparkles,
   Sun,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
-import { type CSSProperties, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { isGarbledTextContent, readTextFile } from "./textEncoding";
 import {
   computeOpportunityAction,
@@ -53,6 +58,7 @@ import {
   parseTranscriptQaPairs,
 } from "./composerModel";
 import {
+  createAnswerCategoryApi,
   createAnswerCardApi,
   createAnswerCardFromQaPairApi,
   createInterviewSessionApi,
@@ -61,6 +67,7 @@ import {
   createResumeVersionApi,
   createWeeklyTaskApi,
   deleteAnswerCardApi,
+  deleteAnswerCategoryApi,
   deleteInterviewSessionApi,
   deleteOpportunityApi,
   deleteQaPairApi,
@@ -80,6 +87,7 @@ import {
   progressOpportunityApi,
   type InitialApiData,
   type JobPilotBackup,
+  updateAnswerCategoryApi,
   updateAnswerCardApi,
   updateInterviewSessionApi,
   updateOpportunityApi,
@@ -91,10 +99,11 @@ import {
   type ApiHealth,
 } from "./apiClient";
 import { apiBaseUrl, isApiEnabled, isPublicDemo } from "./appConfig";
-import { baseAnswerCards, baseWeeklyPlan, resumeVersions, seedInterviewSessions, seedOpportunities } from "./mockData";
+import { baseAnswerCards, baseAnswerCategories, baseWeeklyPlan, resumeVersions, seedInterviewSessions, seedOpportunities, uncategorizedAnswerCategoryId } from "./mockData";
 import { selectDashboardSummary, selectResumeName, selectTodayActions, type DashboardSummary, type TodayAction } from "./selectors";
 import type {
   AnswerCard,
+  AnswerCategory,
   ComposerStep,
   InterviewSession,
   ModuleComposer,
@@ -194,6 +203,20 @@ type WeeklyTaskFormDraft = {
   detail: string;
   level: WeeklyTask["level"];
 };
+
+type AnswerCategoryEditorState =
+  | {
+      mode: "create";
+      parentId: string;
+      name: string;
+    }
+  | {
+      mode: "rename";
+      categoryId: string;
+      name: string;
+    };
+
+const allAnswerCategoryId = "all";
 
 const emptyWeeklyTaskForm = (): WeeklyTaskFormDraft => ({
   title: "",
@@ -613,6 +636,16 @@ function App() {
     isPublicDemo ? { status: "demo" } : isApiEnabled ? { status: "checking" } : { status: "mock" },
   );
   const [answerCards, setAnswerCards] = useState<AnswerCard[]>(baseAnswerCards);
+  const [answerCategories, setAnswerCategories] = useState<AnswerCategory[]>(baseAnswerCategories);
+  const [selectedAnswerCategoryId, setSelectedAnswerCategoryId] = useState(allAnswerCategoryId);
+  const [expandedAnswerCategoryIds, setExpandedAnswerCategoryIds] = useState<Set<string>>(
+    () => new Set(baseAnswerCategories.filter((category) => !category.system && !category.parentId).map((category) => category.id)),
+  );
+  const [answerCategoryEditor, setAnswerCategoryEditor] = useState<AnswerCategoryEditorState | null>(null);
+  const [openAnswerCategoryMenuId, setOpenAnswerCategoryMenuId] = useState("");
+  const [answerCategorySidebarCollapsed, setAnswerCategorySidebarCollapsed] = useState(false);
+  const [draggedAnswerCardId, setDraggedAnswerCardId] = useState("");
+  const [answerCategoryDropTargetId, setAnswerCategoryDropTargetId] = useState("");
   const [selectedAnswerId, setSelectedAnswerId] = useState(baseAnswerCards[0].id);
   const [resumeList, setResumeList] = useState<ResumeVersion[]>(resumeVersions);
   const [selectedResumeId, setSelectedResumeId] = useState(resumeVersions[0].id);
@@ -674,6 +707,10 @@ function App() {
     setSelectedInterviewId(data.interviewSessions[0]?.id ?? "");
     setSelectedQaId(data.interviewSessions[0]?.qaPairs[0]?.id ?? "");
     setAnswerCards(data.answerCards);
+    const loadedAnswerCategories = data.answerCategories?.length ? data.answerCategories : baseAnswerCategories;
+    setAnswerCategories(loadedAnswerCategories);
+    setSelectedAnswerCategoryId(allAnswerCategoryId);
+    setExpandedAnswerCategoryIds(new Set(loadedAnswerCategories.filter((category) => !category.system && !category.parentId).map((category) => category.id)));
     setSelectedAnswerId(data.answerCards[0]?.id ?? "");
     setResumeList(data.resumeVersions);
     setSelectedResumeId(data.resumeVersions[0]?.id ?? "");
@@ -769,6 +806,66 @@ function App() {
   const hydratedTodayActions = normalizeTodayActions(apiTodayActions, localTodayActions);
   const todayActions = hydratedTodayActions.filter((action) => !dismissedTodayIds.has(todayActionKey(action)));
   const normalizedQuery = query.trim().toLowerCase();
+  const sortAnswerCategories = (left: AnswerCategory, right: AnswerCategory) =>
+    left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, "zh-Hans-CN") || left.id.localeCompare(right.id);
+  const answerCategoryById = useMemo(() => new Map(answerCategories.map((category) => [category.id, category])), [answerCategories]);
+  const answerCategoryChildren = useMemo(() => {
+    const children = new Map<string, AnswerCategory[]>();
+    answerCategories.forEach((category) => {
+      if (!category.parentId || !answerCategoryById.has(category.parentId)) return;
+      const items = children.get(category.parentId) ?? [];
+      items.push(category);
+      children.set(category.parentId, items);
+    });
+    children.forEach((items) => items.sort(sortAnswerCategories));
+    return children;
+  }, [answerCategories, answerCategoryById]);
+  const rootAnswerCategories = useMemo(
+    () => answerCategories.filter((category) => !category.parentId || !answerCategoryById.has(category.parentId)).sort(sortAnswerCategories),
+    [answerCategories, answerCategoryById],
+  );
+  const resolveAnswerCategoryId = (card: AnswerCard) =>
+    card.categoryId && answerCategoryById.has(card.categoryId) ? card.categoryId : uncategorizedAnswerCategoryId;
+  const isAllAnswerCategorySelected = selectedAnswerCategoryId === allAnswerCategoryId;
+  const selectedAnswerCategory = answerCategoryById.get(selectedAnswerCategoryId) ?? answerCategoryById.get(uncategorizedAnswerCategoryId) ?? baseAnswerCategories[0];
+  const selectedAnswerCategoryIds = useMemo(() => {
+    if (selectedAnswerCategoryId === allAnswerCategoryId) return new Set(answerCategories.map((category) => category.id));
+    const ids = new Set<string>();
+    const collect = (categoryId: string) => {
+      ids.add(categoryId);
+      (answerCategoryChildren.get(categoryId) ?? []).forEach((child) => collect(child.id));
+    };
+    collect(answerCategoryById.has(selectedAnswerCategoryId) ? selectedAnswerCategoryId : uncategorizedAnswerCategoryId);
+    return ids;
+  }, [answerCategories, answerCategoryById, answerCategoryChildren, selectedAnswerCategoryId]);
+  const answerCategoryCounts = useMemo(() => {
+    const directCounts = new Map<string, number>();
+    answerCards.forEach((card) => {
+      const categoryId = card.categoryId && answerCategoryById.has(card.categoryId) ? card.categoryId : uncategorizedAnswerCategoryId;
+      directCounts.set(categoryId, (directCounts.get(categoryId) ?? 0) + 1);
+    });
+    const aggregateCounts = new Map<string, number>();
+    const countWithChildren = (categoryId: string): number => {
+      const total =
+        (directCounts.get(categoryId) ?? 0) +
+        (answerCategoryChildren.get(categoryId) ?? []).reduce((count, child) => count + countWithChildren(child.id), 0);
+      aggregateCounts.set(categoryId, total);
+      return total;
+    };
+    answerCategories.forEach((category) => countWithChildren(category.id));
+    return aggregateCounts;
+  }, [answerCards, answerCategories, answerCategoryById, answerCategoryChildren]);
+  const answerCategoryOptions = useMemo(() => {
+    const options: Array<{ category: AnswerCategory; label: string }> = [];
+    const append = (category: AnswerCategory, depth: number) => {
+      options.push({ category, label: `${"　".repeat(depth)}${category.name}` });
+      (answerCategoryChildren.get(category.id) ?? []).forEach((child) => append(child, depth + 1));
+    };
+    rootAnswerCategories.forEach((category) => append(category, 0));
+    return options;
+  }, [answerCategoryChildren, rootAnswerCategories]);
+  const selectedAnswerCategoryLabel = isAllAnswerCategorySelected ? "全部答案" : selectedAnswerCategory.name;
+  const selectedAnswerCategoryTotal = isAllAnswerCategorySelected ? answerCards.length : answerCategoryCounts.get(selectedAnswerCategory.id) ?? 0;
   const filteredInterviewSessions = interviewSessions.filter((session) =>
     `${session.company} ${session.role} ${session.round} ${session.date}`.toLowerCase().includes(normalizedQuery),
   );
@@ -780,15 +877,20 @@ function App() {
     () =>
       answerCards.filter((card) => {
         const haystack = `${card.question} ${card.answer} ${card.framework} ${card.source} ${card.relatedRoles} ${card.type} ${card.status} ${card.practiceStatus}`.toLowerCase();
-        return haystack.includes(normalizedQuery);
+        return (isAllAnswerCategorySelected || selectedAnswerCategoryIds.has(resolveAnswerCategoryId(card))) && haystack.includes(normalizedQuery);
       }),
-    [answerCards, normalizedQuery],
+    [answerCards, normalizedQuery, isAllAnswerCategorySelected, selectedAnswerCategoryIds, answerCategoryById],
   );
-  const randomPracticeCard = answerCards.find((card) => card.id === randomPracticeAnswerId);
+  const randomPracticeCard = filteredAnswerCards.find((card) => card.id === randomPracticeAnswerId);
   const answerList = paginateList(filteredAnswerCards, answerPage, GRID_PAGE_SIZE);
   const visibleAnswerCards = answerList.visible;
   const answerPageCount = answerList.pageCount;
   const safeAnswerPage = answerList.safePage;
+  useEffect(() => {
+    if (selectedAnswerCategoryId !== allAnswerCategoryId && !answerCategoryById.has(selectedAnswerCategoryId)) {
+      setSelectedAnswerCategoryId(uncategorizedAnswerCategoryId);
+    }
+  }, [answerCategoryById, selectedAnswerCategoryId]);
   const openWeeklyTasks = useMemo(() => weeklyPlan.tasks.filter(isOpenWeeklyTask), [weeklyPlan.tasks]);
   const weeklyTaskGroups = useMemo(
     () =>
@@ -1483,8 +1585,88 @@ function App() {
     void updateAnswerCardApi(id, patch).catch(() => setSystemMessage("答案卡已保存在本机"));
   };
 
+  const clearAnswerCardDragState = () => {
+    setDraggedAnswerCardId("");
+    setAnswerCategoryDropTargetId("");
+  };
+
+  const getDraggedAnswerCardId = (event: DragEvent<HTMLElement>) =>
+    event.dataTransfer.getData("application/x-jobpilot-answer-card") || draggedAnswerCardId;
+
+  const canDropAnswerCardToCategory = (answerId: string, categoryId: string) => {
+    const card = answerCards.find((item) => item.id === answerId);
+    if (!card || !answerCategoryById.has(categoryId)) return false;
+    return resolveAnswerCategoryId(card) !== categoryId;
+  };
+
+  const handleAnswerCardDragStart = (event: DragEvent<HTMLButtonElement>, card: AnswerCard) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-jobpilot-answer-card", card.id);
+    event.dataTransfer.setData("text/plain", card.question);
+    const dragPreview = document.createElement("div");
+    dragPreview.className = "answer-card-drag-preview";
+    dragPreview.textContent = card.question || "答案卡";
+    document.body.appendChild(dragPreview);
+    event.dataTransfer.setDragImage(dragPreview, 16, 18);
+    window.setTimeout(() => dragPreview.remove(), 0);
+    setDraggedAnswerCardId(card.id);
+    setAnswerCategoryDropTargetId("");
+  };
+
+  const handleAnswerCategoryDragOver = (event: DragEvent<HTMLDivElement>, categoryId: string) => {
+    const answerId = getDraggedAnswerCardId(event);
+    if (!canDropAnswerCardToCategory(answerId, categoryId)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setAnswerCategoryDropTargetId(categoryId);
+  };
+
+  const handleAnswerCategoryDragLeave = (event: DragEvent<HTMLDivElement>, categoryId: string) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setAnswerCategoryDropTargetId((id) => (id === categoryId ? "" : id));
+  };
+
+  const moveAnswerCardToCategory = (answerId: string, categoryId: string) => {
+    const card = answerCards.find((item) => item.id === answerId);
+    const category = answerCategoryById.get(categoryId);
+    if (!card || !category || resolveAnswerCategoryId(card) === category.id) return;
+    setAnswerCards((cards) => cards.map((item) => (item.id === answerId ? { ...item, categoryId: category.id } : item)));
+    setAnswerPage(0);
+    syncUpdatedAnswerCard(answerId, { categoryId: category.id });
+    setSystemMessage(`已移动到${category.name}`);
+  };
+
+  const handleAnswerCategoryDrop = (event: DragEvent<HTMLDivElement>, categoryId: string) => {
+    const answerId = getDraggedAnswerCardId(event);
+    if (!canDropAnswerCardToCategory(answerId, categoryId)) {
+      clearAnswerCardDragState();
+      return;
+    }
+    event.preventDefault();
+    moveAnswerCardToCategory(answerId, categoryId);
+    clearAnswerCardDragState();
+  };
+
   const syncDeletedAnswerCard = (id: string) => {
     void deleteAnswerCardApi(id).catch(() => setSystemMessage("答案卡已在本机更新"));
+  };
+
+  const syncCreatedAnswerCategory = (category: AnswerCategory) => {
+    void createAnswerCategoryApi(category)
+      .then((savedCategory) => {
+        setAnswerCategories((categories) => categories.map((item) => (item.id === category.id ? savedCategory : item)));
+        setSelectedAnswerCategoryId((id) => (id === category.id ? savedCategory.id : id));
+      })
+      .catch(() => setSystemMessage("分类已保存在本机"));
+  };
+
+  const syncUpdatedAnswerCategory = (id: string, patch: Partial<AnswerCategory>) => {
+    void updateAnswerCategoryApi(id, patch).catch(() => setSystemMessage("分类已保存在本机"));
+  };
+
+  const syncDeletedAnswerCategory = (id: string) => {
+    void deleteAnswerCategoryApi(id).catch(() => setSystemMessage("分类已在本机更新"));
   };
 
   const syncWeeklyPlanPatch = (patch: Partial<Omit<WeeklyPlan, "tasks">>) => {
@@ -1655,6 +1837,7 @@ function App() {
       type: "MANUAL",
       status: "DRAFT",
       source: "手动创建",
+      categoryId: isAllAnswerCategorySelected || selectedAnswerCategory.system ? uncategorizedAnswerCategoryId : selectedAnswerCategory.id,
       framework: "背景 -> 动作 -> 结果 -> 复盘",
       answer: "在这里写你希望下次面试复用的回答。",
       relatedRoles: "待填写",
@@ -1667,7 +1850,97 @@ function App() {
     setSystemMessage("答案卡已添加");
   };
 
-  const updateSelectedAnswer = (field: keyof Pick<AnswerCard, "question" | "type" | "framework" | "answer" | "relatedRoles" | "practiceStatus" | "status">, value: string) => {
+  const openCreateAnswerCategoryEditor = (parentId = "") => {
+    setOpenAnswerCategoryMenuId("");
+    setAnswerCategoryEditor({ mode: "create", parentId, name: "" });
+    if (parentId) setExpandedAnswerCategoryIds((ids) => new Set(ids).add(parentId));
+  };
+
+  const openRenameAnswerCategoryEditor = (category: AnswerCategory) => {
+    if (category.system) {
+      setSystemMessage("系统分类不可重命名");
+      return;
+    }
+    setOpenAnswerCategoryMenuId("");
+    setAnswerCategoryEditor({ mode: "rename", categoryId: category.id, name: category.name });
+  };
+
+  const commitAnswerCategoryEditor = () => {
+    if (!answerCategoryEditor) return;
+    const name = answerCategoryEditor.name.trim();
+    if (!name) {
+      setSystemMessage("请先填写分类名称");
+      return;
+    }
+
+    if (answerCategoryEditor.mode === "rename") {
+      const category = answerCategoryById.get(answerCategoryEditor.categoryId);
+      if (!category || category.system || name === category.name) {
+        setAnswerCategoryEditor(null);
+        return;
+      }
+      setAnswerCategories((categories) => categories.map((item) => (item.id === category.id ? { ...item, name } : item)));
+      syncUpdatedAnswerCategory(category.id, { name });
+      setAnswerCategoryEditor(null);
+      setSystemMessage("分类已重命名");
+      return;
+    }
+
+    const parentId = answerCategoryEditor.parentId && answerCategoryById.has(answerCategoryEditor.parentId) ? answerCategoryEditor.parentId : "";
+    const siblings = answerCategories.filter((category) => (category.parentId ?? "") === parentId);
+    const newCategory: AnswerCategory = {
+      id: makeId("CAT"),
+      name,
+      parentId: parentId || undefined,
+      sortOrder: Math.max(-1, ...siblings.map((category) => category.sortOrder)) + 1,
+    };
+    setAnswerCategories((categories) => [...categories, newCategory]);
+    if (parentId) setExpandedAnswerCategoryIds((ids) => new Set(ids).add(parentId));
+    setSelectedAnswerCategoryId(newCategory.id);
+    setAnswerPage(0);
+    setAnswerCategoryEditor(null);
+    syncCreatedAnswerCategory(newCategory);
+    setSystemMessage("分类已添加");
+  };
+
+  const deleteAnswerCategory = (category: AnswerCategory) => {
+    if (category.system) {
+      setSystemMessage("系统分类不可删除");
+      return;
+    }
+    const ids = new Set<string>([category.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      answerCategories.forEach((item) => {
+        if (item.parentId && ids.has(item.parentId) && !ids.has(item.id)) {
+          ids.add(item.id);
+          changed = true;
+        }
+      });
+    }
+    setAnswerCards((cards) =>
+      cards.map((card) => (card.categoryId && ids.has(card.categoryId) ? { ...card, categoryId: uncategorizedAnswerCategoryId } : card)),
+    );
+    setAnswerCategories((categories) => categories.filter((item) => !ids.has(item.id)));
+    if (ids.has(selectedAnswerCategoryId)) setSelectedAnswerCategoryId(uncategorizedAnswerCategoryId);
+    setOpenAnswerCategoryMenuId("");
+    setAnswerCategoryEditor(null);
+    setAnswerPage(0);
+    syncDeletedAnswerCategory(category.id);
+    setSystemMessage("分类已删除，卡片已移到尚未归类");
+  };
+
+  const toggleAnswerCategoryExpanded = (categoryId: string) => {
+    setExpandedAnswerCategoryIds((ids) => {
+      const next = new Set(ids);
+      if (next.has(categoryId)) next.delete(categoryId);
+      else next.add(categoryId);
+      return next;
+    });
+  };
+
+  const updateSelectedAnswer = (field: keyof Pick<AnswerCard, "question" | "type" | "framework" | "answer" | "relatedRoles" | "practiceStatus" | "status" | "categoryId">, value: string) => {
     const patch = { [field]: value } as Partial<AnswerCard>;
     setAnswerCards((cards) => cards.map((card) => (card.id === selectedAnswer.id ? { ...card, [field]: value } : card)));
     if (field === "status" || field === "practiceStatus") invalidateApiInsights();
@@ -1778,6 +2051,7 @@ function App() {
       opportunities,
       interviewSessions,
       answerCards,
+      answerCategories,
       resumeVersions: resumeList,
       weeklyPlan,
       storedFiles: [],
@@ -1833,6 +2107,7 @@ function App() {
         `- 类型：${card.type}`,
         `- 状态：${card.status}`,
         `- 来源：${card.source}`,
+        `- 分类：${answerCategoryById.get(resolveAnswerCategoryId(card))?.name ?? "尚未归类"}`,
         `- 适用方向：${card.relatedRoles}`,
         `- 练习状态：${card.practiceStatus}`,
         "",
@@ -1985,7 +2260,7 @@ function App() {
   };
 
   const startRandomAnswerPractice = () => {
-    const candidates = filteredAnswerCards.length ? filteredAnswerCards : answerCards;
+    const candidates = filteredAnswerCards;
     if (!candidates.length) {
       setSystemMessage("没有可练习的答案卡");
       return;
@@ -2207,6 +2482,7 @@ function App() {
       type: "MANUAL",
       status: "DRAFT",
       source: "手动创建",
+      categoryId: isAllAnswerCategorySelected || selectedAnswerCategory.system ? uncategorizedAnswerCategoryId : selectedAnswerCategory.id,
       framework: composerDraft.framework.trim() || "背景 -> 动作 -> 结果 -> 复盘",
       answer: composerDraft.answer.trim() || "在这里补充可复用回答。",
       relatedRoles: composerDraft.relatedRoles.trim() || "待填写",
@@ -2407,6 +2683,7 @@ function App() {
         status: "ACTIVE",
         source: "面试复盘",
         sourceQaPairId: selectedQa.id,
+        categoryId: uncategorizedAnswerCategoryId,
         framework: selectedQa.framework,
         answer: selectedQa.optimizedAnswer,
         relatedRoles: selectedInterview.role,
@@ -2442,6 +2719,121 @@ function App() {
     }
 
     createLocalAnswerCard();
+  };
+
+  const renderAnswerCategoryEditor = (matches: boolean, depth: number) => {
+    if (!answerCategoryEditor || !matches) return null;
+    const label = answerCategoryEditor.mode === "create" ? "新增分类" : "重命名分类";
+    return (
+      <div className="answer-category-inline-editor" style={{ "--category-depth": depth } as CSSProperties}>
+        <span>{label}</span>
+        <input
+          autoFocus
+          value={answerCategoryEditor.name}
+          onChange={(event) => setAnswerCategoryEditor((editor) => (editor ? { ...editor, name: event.target.value } : editor))}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commitAnswerCategoryEditor();
+            if (event.key === "Escape") setAnswerCategoryEditor(null);
+          }}
+          placeholder="分类名称"
+        />
+        <div>
+          <button className="primary-button compact-button" onClick={commitAnswerCategoryEditor}>
+            保存
+          </button>
+          <button className="ghost-button compact-button" onClick={() => setAnswerCategoryEditor(null)}>
+            取消
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAnswerCategoryTree = (category: AnswerCategory, depth = 0) => {
+    const children = answerCategoryChildren.get(category.id) ?? [];
+    const hasChildren = children.length > 0;
+    const expanded = expandedAnswerCategoryIds.has(category.id);
+    const active = !isAllAnswerCategorySelected && selectedAnswerCategory.id === category.id;
+    const dropTarget = answerCategoryDropTargetId === category.id;
+    const FolderIcon = hasChildren && expanded ? FolderOpen : Folder;
+
+    return (
+      <div key={category.id} className="answer-category-node">
+        <div
+          className={`answer-category-row ${active ? "active" : ""} ${dropTarget ? "drop-target" : ""}`}
+          style={{ "--category-depth": depth } as CSSProperties}
+          onDragOver={(event) => handleAnswerCategoryDragOver(event, category.id)}
+          onDragLeave={(event) => handleAnswerCategoryDragLeave(event, category.id)}
+          onDrop={(event) => handleAnswerCategoryDrop(event, category.id)}
+        >
+          <button
+            className="answer-category-toggle"
+            onClick={() => hasChildren && toggleAnswerCategoryExpanded(category.id)}
+            disabled={!hasChildren}
+            aria-label={expanded ? "收起分类" : "展开分类"}
+          >
+            {hasChildren ? expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
+          </button>
+          <button
+            className="answer-category-main"
+            onClick={() => {
+              setSelectedAnswerCategoryId(category.id);
+              setOpenAnswerCategoryMenuId("");
+              setAnswerPage(0);
+              setAnswerView("list");
+            }}
+            title="拖入答案卡可移动到此分类"
+          >
+            <FolderIcon size={16} />
+            <span>{category.name}</span>
+            {category.system ? <em>系统</em> : null}
+          </button>
+          {!category.system ? (
+            <div className="answer-category-actions">
+              <button className="answer-category-icon-action" onClick={() => openCreateAnswerCategoryEditor(category.id)} aria-label={`在${category.name}下新增子分类`}>
+                <Plus size={13} />
+              </button>
+              <div className="answer-category-menu-wrap">
+                <button
+                  className="answer-category-icon-action"
+                  onClick={() => setOpenAnswerCategoryMenuId((id) => (id === category.id ? "" : category.id))}
+                  aria-label={`${category.name}更多操作`}
+                  aria-expanded={openAnswerCategoryMenuId === category.id}
+                >
+                  ⋮
+                </button>
+                {openAnswerCategoryMenuId === category.id ? (
+                  <div className="answer-category-menu">
+                    <button onClick={() => openRenameAnswerCategoryEditor(category)}>
+                      <Pencil size={13} />
+                      <span>重命名</span>
+                    </button>
+                    <button
+                      className="answer-category-menu-danger"
+                      onClick={() => {
+                        setOpenAnswerCategoryMenuId("");
+                        requestConfirm({
+                          title: "删除这个分类？",
+                          description: `「${category.name}」及其子分类会被删除，里面的答案卡会移动到「尚未归类」。`,
+                          confirmLabel: "删除分类",
+                          onConfirm: () => deleteAnswerCategory(category),
+                        });
+                      }}
+                    >
+                      <Trash2 size={13} />
+                      <span>删除</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+        {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "rename" && answerCategoryEditor.categoryId === category.id, depth)}
+        {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "create" && answerCategoryEditor.parentId === category.id, depth + 1)}
+        {hasChildren && expanded ? children.map((child) => renderAnswerCategoryTree(child, depth + 1)) : null}
+      </div>
+    );
   };
 
   return (
@@ -3140,22 +3532,63 @@ function App() {
         )}
 
         {page === "answers" && (
-          <section className="answer-workspace">
+          <section className={`answer-workspace ${answerCategorySidebarCollapsed ? "answer-workspace-collapsed" : ""}`}>
+            {!answerCategorySidebarCollapsed ? (
+              <div className="surface answer-category-pane">
+                <div className="answer-category-header">
+                  <SectionTitle label="分类" title="答案文件夹" action={`${answerCategories.length} 个`} />
+                  <button className="answer-category-icon-action" onClick={() => setAnswerCategorySidebarCollapsed(true)} aria-label="收起分类侧栏">
+                    <PanelRight size={15} />
+                  </button>
+                </div>
+                <div className="answer-category-tree">
+                  <div className={`answer-category-row answer-category-all-row ${isAllAnswerCategorySelected ? "active" : ""}`}>
+                    <span className="answer-category-toggle" />
+                    <button
+                      className="answer-category-main"
+                      onClick={() => {
+                        setSelectedAnswerCategoryId(allAnswerCategoryId);
+                        setOpenAnswerCategoryMenuId("");
+                        setAnswerPage(0);
+                        setAnswerView("list");
+                      }}
+                    >
+                      <Library size={16} />
+                      <span>全部答案</span>
+                      <strong>{answerCards.length}</strong>
+                    </button>
+                    <div className="answer-category-actions">
+                      <button className="answer-category-icon-action" onClick={() => openCreateAnswerCategoryEditor()} aria-label="新增顶层分类">
+                        <Plus size={13} />
+                      </button>
+                    </div>
+                  </div>
+                  {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "create" && answerCategoryEditor.parentId === "", 0)}
+                  {rootAnswerCategories.map((category) => renderAnswerCategoryTree(category))}
+                </div>
+              </div>
+            ) : null}
             {answerView === "list" ? (
               <div className="surface answer-list-pane answer-home-pane paginated-pane">
                 <div className="paginated-pane-header">
+                  {answerCategorySidebarCollapsed ? (
+                    <button className="secondary-button compact-button answer-category-reopen" onClick={() => setAnswerCategorySidebarCollapsed(false)}>
+                      <PanelRight size={14} />
+                      <span>显示分类</span>
+                    </button>
+                  ) : null}
                   <PageIntro
-                    label="答案库"
+                    label={selectedAnswerCategoryLabel}
                     title="沉淀可复用回答"
-                    detail="把常见问题、回答框架和推荐表达整理成之后可以直接练习的答案卡。"
-                    action={`${answerCards.length} 张卡片`}
+                    detail={isAllAnswerCategorySelected ? "当前显示全部答案卡；选择具体分类时会只看该分类及其子分类。" : "当前显示所选分类及其子分类里的答案卡。"}
+                    action={`${filteredAnswerCards.length}/${selectedAnswerCategoryTotal} 张卡片`}
                   />
                   <div className="button-row tight-row">
                     <button className="primary-button" onClick={() => openComposer("answer")}>
                       <Plus size={16} />
                       <span>新增答案卡</span>
                     </button>
-                    <button className="secondary-button answer-random-button" onClick={startRandomAnswerPractice} disabled={randomPracticeSpinning || answerCards.length === 0}>
+                    <button className="secondary-button answer-random-button" onClick={startRandomAnswerPractice} disabled={randomPracticeSpinning || filteredAnswerCards.length === 0}>
                       <Sparkles size={16} />
                       <span>{randomPracticeSpinning ? "抽取中..." : "随机抽练"}</span>
                     </button>
@@ -3208,8 +3641,13 @@ function App() {
                     ) : (
                       visibleAnswerCards.map((card) => (
                         <button
-                          className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
+                          className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""} ${draggedAnswerCardId === card.id ? "is-dragging" : ""}`}
                           key={card.id}
+                          draggable
+                          title="拖到左侧分类可移动"
+                          aria-label={`打开答案卡：${card.question}。可拖到左侧分类移动。`}
+                          onDragStart={(event) => handleAnswerCardDragStart(event, card)}
+                          onDragEnd={clearAnswerCardDragState}
                           onClick={() => openAnswerCard(card.id)}
                         >
                           <div>
@@ -3217,6 +3655,7 @@ function App() {
                             <h3>{card.question}</h3>
                           </div>
                           <small>{card.status === "DRAFT" ? "草稿" : "可复用"} / {card.practiceStatus}</small>
+                          <span className="answer-card-category">{answerCategoryById.get(resolveAnswerCategoryId(card))?.name ?? "尚未归类"}</span>
                           <ChevronRight size={16} />
                         </button>
                       ))
@@ -3228,12 +3667,22 @@ function App() {
             ) : (
               <div className="surface answer-editor answer-detail-pane">
                 <div className="interview-detail-nav interview-detail-nav-start">
+                  {answerCategorySidebarCollapsed ? (
+                    <button className="secondary-button compact-button answer-category-reopen" onClick={() => setAnswerCategorySidebarCollapsed(false)}>
+                      <PanelRight size={14} />
+                      <span>显示分类</span>
+                    </button>
+                  ) : null}
                   <button className="ghost-button compact-button" onClick={() => setAnswerView("list")}>
                     <ChevronLeft size={14} />
-                    <span>全部答案</span>
+                    <span>返回{selectedAnswerCategoryLabel}</span>
                   </button>
                 </div>
-                <SectionTitle label={selectedAnswer.source} title={selectedAnswer.question} action={selectedAnswer.status === "DRAFT" ? "草稿" : "可复用"} />
+                <SectionTitle
+                  label={`${selectedAnswer.source} / ${answerCategoryById.get(resolveAnswerCategoryId(selectedAnswer))?.name ?? "尚未归类"}`}
+                  title={selectedAnswer.question}
+                  action={selectedAnswer.status === "DRAFT" ? "草稿" : "可复用"}
+                />
                 <ReviewBlock label="问题" value={selectedAnswer.question} onChange={(value) => updateSelectedAnswer("question", value)} />
                 <ReviewBlock label="回答框架" value={selectedAnswer.framework} onChange={(value) => updateSelectedAnswer("framework", value)} />
                 <ReviewBlock label="推荐回答" value={selectedAnswer.answer} onChange={(value) => updateSelectedAnswer("answer", value)} />
@@ -3252,6 +3701,16 @@ function App() {
                       <option value="薄弱">薄弱</option>
                       <option value="中等">中等</option>
                       <option value="熟练">熟练</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>移动到</span>
+                    <select value={resolveAnswerCategoryId(selectedAnswer)} onChange={(event) => updateSelectedAnswer("categoryId", event.target.value)}>
+                      {answerCategoryOptions.map(({ category, label }) => (
+                        <option key={category.id} value={category.id}>
+                          {label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                 </div>

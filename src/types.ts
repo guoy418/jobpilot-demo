@@ -139,10 +139,19 @@ export type AnswerCard = {
   status: "DRAFT" | "ACTIVE";
   source: string;
   sourceQaPairId?: string;
+  categoryId?: string;
   framework: string;
   answer: string;
   relatedRoles: string;
   practiceStatus: "薄弱" | "中等" | "熟练";
+};
+
+export type AnswerCategory = {
+  id: string;
+  name: string;
+  parentId?: string;
+  sortOrder: number;
+  system?: boolean;
 };
 
 export type ResumeVersion = {

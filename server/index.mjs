@@ -99,6 +99,7 @@ const handleGet = (req, res) => {
     }
   }
   if (url.pathname === "/api/answers") return sendJson(res, 200, repo.listAnswers());
+  if (url.pathname === "/api/answer-categories") return sendJson(res, 200, repo.listAnswerCategories());
   if (url.pathname === "/api/resumes") return sendJson(res, 200, repo.listResumes());
   if (parts[0] === "api" && parts[1] === "resumes" && parts[2]) {
     const resumeId = decodeURIComponent(parts[2]);
@@ -124,6 +125,12 @@ const handleWrite = async (req, res) => {
     const payload = await readJsonBody(req);
     const answer = repo.createAnswer(payload);
     return sendJson(res, 201, answer);
+  }
+
+  if (url.pathname === "/api/answer-categories" && req.method === "POST") {
+    const payload = await readJsonBody(req);
+    const category = repo.createAnswerCategory(payload);
+    return sendJson(res, 201, category);
   }
 
   if (url.pathname === "/api/weekly-plan/current" && req.method === "PATCH") {
@@ -196,6 +203,19 @@ const handleWrite = async (req, res) => {
     if (req.method === "DELETE") {
       const deleted = repo.deleteAnswer(answerId);
       return deleted ? sendJson(res, 200, { ok: true, id: answerId }) : sendNotFound(res, url.pathname);
+    }
+  }
+
+  if (parts[0] === "api" && parts[1] === "answer-categories" && parts[2]) {
+    const categoryId = decodeURIComponent(parts[2]);
+    if (req.method === "PATCH") {
+      const payload = await readJsonBody(req);
+      const category = repo.updateAnswerCategory(categoryId, payload);
+      return category ? sendJson(res, 200, category) : sendNotFound(res, url.pathname);
+    }
+    if (req.method === "DELETE") {
+      const deleted = repo.deleteAnswerCategory(categoryId);
+      return deleted ? sendJson(res, 200, { ok: true, id: categoryId }) : sendNotFound(res, url.pathname);
     }
   }
 
