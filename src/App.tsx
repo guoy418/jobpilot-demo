@@ -242,8 +242,11 @@ type AiSettings = {
 };
 type InterviewInputMode = "review-json" | "raw-transcript";
 
+type AppTheme = "dark" | "light";
+
 const aiSettingsStorageKey = "jobpilot.aiSettings.v1";
 const dismissedTodayStorageKey = "jobpilot.dismissedToday.v1";
+const themeStorageKey = "jobpilot.theme.v1";
 const defaultAiSettings: AiSettings = {
   provider: "none",
   model: "",
@@ -271,7 +274,7 @@ const todayActionSourceDetail = (action: TodayAction) => action.sourceLabel || t
 const todayActionReason = (action: TodayAction) => {
   if (action.why) return action.why;
   if (action.source === "opportunity") return "岗位当前阶段还有下一步动作，优先级来自状态、截止时间和岗位权重。";
-  if (action.source === "interview") return "面试复盘中仍有薄弱或待处理问题。";
+  if (action.source === "interview") return "面试复盘中仍有薄弱或待整理问题。";
   return "本周计划中有仍未完成的行动。";
 };
 
@@ -505,6 +508,15 @@ const loadAiSettings = (): AiSettings => {
   }
 };
 
+const loadThemePreference = (): AppTheme => {
+  try {
+    const saved = window.localStorage.getItem(themeStorageKey);
+    return saved === "dark" || saved === "light" ? saved : "light";
+  } catch {
+    return "light";
+  }
+};
+
 const numberWithFallback = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 
 const normalizeDashboardSummary = (summary: ApiDashboardSummary | null, fallback: DashboardSummary): DashboardSummary => ({
@@ -709,7 +721,7 @@ function OpportunityCombobox({
 function App() {
   const [page, setPage] = useState<Page>("home");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<AppTheme>(() => loadThemePreference());
   const [libraryNavOpen, setLibraryNavOpen] = useState(true);
   const [showMoreTodayActions, setShowMoreTodayActions] = useState(false);
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
@@ -853,6 +865,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(dismissedTodayStorageKey, JSON.stringify({ date: todayDateKey(), ids: [...dismissedTodayIds] }));
   }, [dismissedTodayIds]);
+
+  useEffect(() => {
+    window.localStorage.setItem(themeStorageKey, theme);
+  }, [theme]);
 
   useEffect(() => {
     setInterviewReparseNotice("");
@@ -3148,7 +3164,7 @@ function App() {
                     <span
                       className="field-tooltip today-help"
                       tabIndex={0}
-                      data-tooltip="今日行动不是手动待办清单，而是从岗位阶段、面试复盘里的待处理问题和本周计划任务自动生成。答案卡不会直接提醒你练习；加入本周计划后，才会出现在这里。"
+                      data-tooltip="今日行动不是手动待办清单，而是从岗位阶段、面试复盘里的待整理问题和本周计划任务自动生成。答案卡不会直接提醒你练习；加入本周计划后，才会出现在这里。"
                       aria-label="今日行动生成规则"
                     >
                       ?
@@ -3529,8 +3545,8 @@ function App() {
                     title="记录每一场面试"
                     detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
                     action={`${interviewSessions.length} 场面试`}
-                    helpTooltip="待处理问题指复盘中被标记为薄弱、还需要整理或练习的问题。只要一场面试还有待处理问题，它就会进入今日行动；标记已处理后会从今日行动中移除。"
-                    helpLabel="待处理问题说明"
+                    helpTooltip="待整理问题指复盘中被标记为薄弱、还需要整理或练习的问题。只要一场面试还有待整理问题，它就会进入今日行动；标记已处理后会从今日行动中移除。"
+                    helpLabel="待整理问题说明"
                   />
 
                   <div className="button-row tight-row">
@@ -3549,7 +3565,7 @@ function App() {
                         <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
                           <div className="interview-card-topline">
                             <span>{session.date}</span>
-                            <strong>{weakCount ? `${weakCount} 题待处理` : "已整理"}</strong>
+                            <strong>{weakCount ? `${weakCount} 题待整理` : "已整理"}</strong>
                           </div>
                           <h3>{session.company}</h3>
                           <p>{session.role} · {session.round}</p>
