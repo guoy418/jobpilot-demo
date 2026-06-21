@@ -2756,6 +2756,12 @@ small {
   margin-top: auto;
 }
 
+.resume-compact-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .review-block {
   display: grid;
   gap: 8px;
@@ -2788,6 +2794,11 @@ small {
 
 .review-block textarea:focus {
   border-color: var(--border-visible);
+}
+
+.compact-review-block textarea {
+  min-height: 58px;
+  resize: none;
 }
 
 .review-block textarea[readonly] {
@@ -4721,6 +4732,10 @@ small {
     width: 34px;
     justify-content: center;
     padding: 0;
+  }
+
+  .resume-compact-fields {
+    grid-template-columns: 1fr;
   }
 
   .flow-pipeline-steps {

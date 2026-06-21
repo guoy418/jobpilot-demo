@@ -790,6 +790,7 @@ function App() {
   const [interviewPage, setInterviewPage] = useState(0);
   const [answerPage, setAnswerPage] = useState(0);
   const [opportunityPage, setOpportunityPage] = useState(0);
+  const [resumeLinkedOpportunityPage, setResumeLinkedOpportunityPage] = useState(0);
   const [weeklyInterviewPage, setWeeklyInterviewPage] = useState(0);
   const [weeklyPracticePage, setWeeklyPracticePage] = useState(0);
   const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
@@ -1144,6 +1145,8 @@ function App() {
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
     : [];
+  const linkedResumeOpportunityList = paginateList(linkedResumeOpportunities, resumeLinkedOpportunityPage, 2);
+  const visibleLinkedResumeOpportunities = linkedResumeOpportunityList.visible;
   const selectedOpportunityAction = selectedOpportunity ? resolveOpportunityAction(selectedOpportunity) : "P2";
   const selectedOpportunitySuggestedAction = selectedOpportunity ? computeOpportunityAction(selectedOpportunity) : "P2";
   const selectedOpportunityActionHint =
@@ -4337,7 +4340,10 @@ function App() {
                   <button
                     className={`resume-row resume-button ${selectedResume.id === resume.id ? "selected-resume" : ""}`}
                     key={resume.id}
-                    onClick={() => setSelectedResumeId(resume.id)}
+                    onClick={() => {
+                      setSelectedResumeId(resume.id);
+                      setResumeLinkedOpportunityPage(0);
+                    }}
                   >
                     <FileText size={18} />
                     <span>
@@ -4363,8 +4369,10 @@ function App() {
                 </div>
                 <button className="secondary-button compact-button" onClick={() => openStoredFile(selectedResume.storageUri)}>预览文件</button>
               </div>
-              <ReviewBlock label="版本名称" value={selectedResume.name} onChange={(value) => updateSelectedResume("name", value)} />
-              <ReviewBlock label="适合方向" value={selectedResume.roles} onChange={(value) => updateSelectedResume("roles", value)} />
+              <div className="resume-compact-fields">
+                <ReviewBlock compact label="版本名称" value={selectedResume.name} onChange={(value) => updateSelectedResume("name", value)} />
+                <ReviewBlock compact label="适合方向" value={selectedResume.roles} onChange={(value) => updateSelectedResume("roles", value)} />
+              </div>
               <ReviewBlock label="核心卖点" value={selectedResume.points} onChange={(value) => updateSelectedResume("points", value)} />
               <ReviewBlock label="文件摘要" value={selectedResume.summary} onChange={(value) => updateSelectedResume("summary", value)} />
               <div className="linked-list">
@@ -4372,14 +4380,22 @@ function App() {
                 {linkedResumeOpportunities.length === 0 ? (
                   <small>暂未用于投递。使用关系会从岗位详情产生。</small>
                 ) : (
-                  linkedResumeOpportunities.map((opportunity) => {
-                    return (
-                      <button key={opportunity.id} onClick={() => openOpportunity(opportunity.id)}>
-                        <strong>{opportunity.title}</strong>
-                        <small>{opportunity.company}</small>
-                      </button>
-                    );
-                  })
+                  <>
+                    {visibleLinkedResumeOpportunities.map((opportunity) => {
+                      return (
+                        <button key={opportunity.id} onClick={() => openOpportunity(opportunity.id)}>
+                          <strong>{opportunity.title}</strong>
+                          <small>{opportunity.company}</small>
+                        </button>
+                      );
+                    })}
+                    <ListPager
+                      alwaysShow={linkedResumeOpportunityList.pageCount > 1}
+                      page={linkedResumeOpportunityList.safePage}
+                      pageCount={linkedResumeOpportunityList.pageCount}
+                      onPageChange={setResumeLinkedOpportunityPage}
+                    />
+                  </>
                 )}
               </div>
               <div className="danger-zone">
@@ -5287,15 +5303,17 @@ function ReviewBlock({
   label,
   value,
   readOnly,
+  compact,
   onChange,
 }: {
   label: string;
   value: string;
   readOnly?: boolean;
+  compact?: boolean;
   onChange?: (value: string) => void;
 }) {
   return (
-    <label className="review-block">
+    <label className={`review-block${compact ? " compact-review-block" : ""}`}>
       <span>{label}</span>
       <textarea readOnly={readOnly} value={value} onChange={(event) => onChange?.(event.target.value)} />
     </label>
