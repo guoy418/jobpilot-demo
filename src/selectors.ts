@@ -1,4 +1,4 @@
-import { computeOpportunityAction, resolveOpportunityAction, submittedStatuses } from "./domain";
+import { computeOpportunityAction, resolveOpportunityAction, statusLabel, submittedStatuses } from "./domain";
 import type { AnswerCard, InterviewSession, Opportunity, OpportunityAction, Page, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
 export type TodayAction = {
@@ -8,6 +8,9 @@ export type TodayAction = {
   page: Page;
   filter: string;
   source: "opportunity" | "interview" | "weekly";
+  sourceLabel?: string;
+  why?: string;
+  completionOutcome?: string;
   targetId?: string;
   taskId?: string;
 };
@@ -30,6 +33,7 @@ export const selectResumeName = (resumeList: ResumeVersion[], resumeId: string) 
 const priorityOrder: Record<OpportunityAction, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 const dayMs = 24 * 60 * 60 * 1000;
 const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
+const resolveInterviewReviewPriority = (session: InterviewSession): OpportunityAction => session.reviewPriority ?? "P1";
 
 export const sortTodayActions = (actions: TodayAction[]): TodayAction[] =>
   [...actions].sort((left, right) => priorityOrder[left.level] - priorityOrder[right.level]);
@@ -50,6 +54,12 @@ const parseDateLike = (value = "", now = new Date()): Date | null => {
 
   const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
   if (cnDateMatch) return new Date(now.getFullYear(), Number(cnDateMatch[1]) - 1, Number(cnDateMatch[2]));
+
+  const enMonthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
+  if (enMonthMatch) {
+    const monthIndex = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(enMonthMatch[1].slice(0, 3).toLowerCase());
+    if (monthIndex >= 0) return new Date(now.getFullYear(), monthIndex, Number(enMonthMatch[2]));
+  }
 
   const parsedDate = new Date(text);
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
@@ -93,6 +103,20 @@ const weeklyActionRoute = (task: WeeklyTask): Pick<TodayAction, "page" | "target
   if (task.source === "opportunity" && task.relatedEntityId) return { page: "opportunityDetail", targetId: task.relatedEntityId, taskId: task.id };
   if (task.source === "answer" && task.relatedEntityId) return { page: "answers", targetId: task.relatedEntityId, taskId: task.id };
   return { page: "weekly", targetId: task.id, taskId: task.id };
+};
+
+const opportunityCompletionOutcome = (status: Opportunity["status"]) => {
+  if (status === "TO APPLY") return "完成后会标记为已投递，并计入本周投递进度。";
+  if (status === "WRITTEN TEST") return "完成后会推进到筛选中，今日行动不再继续催办这一项。";
+  if (status === "INTERVIEWING") return "完成后会推进到等结果，后续复盘从面试记录进入训练。";
+  return "完成后会按岗位当前阶段推进下一步。";
+};
+
+const weeklyTaskReason = (task: WeeklyTask) => {
+  if (task.source === "answer") return "这张答案卡已被加入本周计划，所以进入今日行动。";
+  if (task.source === "interview") return "这条面试复盘任务已被加入本周计划，需要今天推进。";
+  if (task.source === "weekly-focus") return "本周重点被拆成了一个可执行动作。";
+  return "这是本周计划中仍未完成的自定义动作。";
 };
 
 export const selectDashboardSummary = (
@@ -147,18 +171,24 @@ export const selectTodayActions = (
       page: "opportunityDetail",
       filter: resolveOpportunityAction(item),
       source: "opportunity",
+      sourceLabel: `岗位推进 / ${item.company}`,
+      why: `${statusLabel[item.status]}阶段仍有下一步动作，优先级由状态、截止时间、匹配度和主观优先级计算。`,
+      completionOutcome: opportunityCompletionOutcome(item.status),
       targetId: item.id,
     }));
 
   const interviewActionItems: TodayAction[] = interviewSessions
     .filter((session) => session.qaPairs.some((pair) => pair.weak))
     .map((session) => ({
-      level: "P1",
+      level: resolveInterviewReviewPriority(session),
       title: `复盘${session.company}${session.round}`,
       detail: `${session.qaPairs.filter((pair) => pair.weak).length} 个薄弱回答需要处理`,
       page: "interviews",
       filter: "",
       source: "interview",
+      sourceLabel: `面试复盘 / ${session.company}${session.round}`,
+      why: "复盘里还有标记为薄弱的问题，适合今天先补框架或重讲。",
+      completionOutcome: "完成后这些薄弱问题会被标记为已处理；如需持续练习，可加入本周计划。",
       targetId: session.id,
     }));
 
@@ -170,6 +200,9 @@ export const selectTodayActions = (
       detail: `${task.sourceLabel}: ${task.detail}`,
       filter: "",
       source: "weekly",
+      sourceLabel: `${task.sourceLabel || "本周计划"} / ${task.source === "answer" ? "答案练习" : task.source === "interview" ? "面试练习" : "计划动作"}`,
+      why: weeklyTaskReason(task),
+      completionOutcome: "完成后会标记本周计划任务为 done，并从今日行动移除。",
       ...weeklyActionRoute(task),
     }));
 

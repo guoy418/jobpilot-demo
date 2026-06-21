@@ -179,7 +179,7 @@ export const parseOpportunityDraft = (payload) => {
     nextAction: payload.nextAction || "确认简历版本后投递",
     sourceLabel: fileName || (sourceKind === "job-link" ? "招聘链接" : "文字 JD"),
     sourceText,
-    summary: payload.note || "由岗位管理内上传材料解析生成的岗位记录。",
+    summary: payload.note || "由岗位推进内上传材料解析生成的岗位记录。",
     extractionStatus: payload.extractionStatus || "",
     extractionError: payload.extractionError || "",
   };

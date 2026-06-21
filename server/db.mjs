@@ -17,6 +17,15 @@ const opportunityStatusAction = {
   WAITING: "P2",
   OFFER: "P3",
 };
+const opportunityStatusLabel = {
+  "TO APPLY": "待投递",
+  APPLIED: "已投递",
+  "WRITTEN TEST": "准备笔试",
+  SCREENING: "筛选中",
+  INTERVIEWING: "准备面试",
+  WAITING: "等结果",
+  OFFER: "Offer",
+};
 const opportunityStatusNextAction = {
   "TO APPLY": "补齐材料后投递",
   APPLIED: "三天后跟进投递结果",
@@ -43,6 +52,7 @@ const dayMs = 24 * 60 * 60 * 1000;
 const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 const actionPriorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
 const actionByRank = ["P0", "P1", "P2", "P3"];
+const actionPrioritySet = new Set(actionByRank);
 const baseActionRank = {
   "TO APPLY": 1,
   APPLIED: 1,
@@ -106,6 +116,11 @@ const parseDateLike = (value = "", now = new Date()) => {
   if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
   const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
   if (cnDateMatch) return new Date(now.getFullYear(), Number(cnDateMatch[1]) - 1, Number(cnDateMatch[2]));
+  const enMonthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
+  if (enMonthMatch) {
+    const monthIndex = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(enMonthMatch[1].slice(0, 3).toLowerCase());
+    if (monthIndex >= 0) return new Date(now.getFullYear(), monthIndex, Number(enMonthMatch[2]));
+  }
   const parsedDate = new Date(text);
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 };
@@ -165,7 +180,23 @@ const resolveOpportunityAction = (opportunity) => {
   return computeOpportunityAction(opportunity);
 };
 
+const normalizeOpportunityAction = (value, fallback = "P1") => (actionPrioritySet.has(value) ? value : fallback);
+
 const sortTodayActions = (actions) => [...actions].sort((left, right) => actionPriorityRank[left.level] - actionPriorityRank[right.level]);
+
+const opportunityCompletionOutcome = (status) => {
+  if (status === "TO APPLY") return "完成后会标记为已投递，并计入本周投递进度。";
+  if (status === "WRITTEN TEST") return "完成后会推进到筛选中，今日行动不再继续催办这一项。";
+  if (status === "INTERVIEWING") return "完成后会推进到等结果，后续复盘从面试记录进入训练。";
+  return "完成后会按岗位当前阶段推进下一步。";
+};
+
+const weeklyTaskReason = (task) => {
+  if (task.source === "answer") return "这张答案卡已被加入本周计划，所以进入今日行动。";
+  if (task.source === "interview") return "这条面试复盘任务已被加入本周计划，需要今天推进。";
+  if (task.source === "weekly-focus") return "本周重点被拆成了一个可执行动作。";
+  return "这是本周计划中仍未完成的自定义动作。";
+};
 
 const nowIso = () => new Date().toISOString();
 let idSequence = 0;
@@ -357,6 +388,7 @@ const toInterviewSession = (row, sourceFiles = [], qaPairs = []) => ({
   role: row.role,
   round: row.round,
   date: row.date,
+  reviewPriority: normalizeOpportunityAction(row.review_priority, "P1"),
   sourceFiles,
   qaPairs,
 });
@@ -471,6 +503,7 @@ const createSchema = (db) => {
       role TEXT NOT NULL,
       round TEXT NOT NULL,
       date TEXT NOT NULL,
+      review_priority TEXT NOT NULL DEFAULT 'P1',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (opportunity_id) REFERENCES opportunities(id)
@@ -587,6 +620,7 @@ const migrateSchema = (db) => {
   ensureColumn(db, "opportunities", "due_date", "TEXT");
   ensureColumn(db, "opportunities", "action_manual", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "opportunity_source_assets", "storage_uri", "TEXT");
+  ensureColumn(db, "interview_sessions", "review_priority", "TEXT NOT NULL DEFAULT 'P1'");
   ensureColumn(db, "interview_source_files", "content", "TEXT");
   ensureColumn(db, "interview_source_files", "storage_uri", "TEXT");
   ensureColumn(db, "resume_versions", "storage_uri", "TEXT");
@@ -742,7 +776,7 @@ const seedDatabase = (db) => {
   for (const item of opportunities) insertOpportunity.run(...item, createdAt, createdAt);
 
   [
-    ["SRC-021-1", "OP-021", "jd-text", "岗位 JD 文本", "从岗位管理内新增后生成正式记录", opportunities[0][12], "May 24 22:11"],
+    ["SRC-021-1", "OP-021", "jd-text", "岗位 JD 文本", "从岗位推进内新增后生成正式记录", opportunities[0][12], "May 24 22:11"],
     ["SRC-021-2", "OP-021", "screenshot", "招聘页截图", "保留原始招聘页，方便后续核对岗位要求", "截图预览占位：招聘页标题、公司、岗位要求、截止时间和投递入口会保存在本地文件库。", "May 24 22:12"],
     ["SRC-020-1", "OP-020", "job-link", "招聘链接", "来自小红书校招页面", "https://job.xiaohongshu.com/growth-product-intern", "May 20 19:40"],
     ["SRC-020-2", "OP-020", "referral-note", "内推备注", "内推人建议重点准备增长案例", "内推人备注：业务面会重点看增长拆解、指标意识和反问质量。", "May 21 10:05"],
@@ -756,7 +790,7 @@ const seedDatabase = (db) => {
   [
     ["TL-021-1", "OP-021", "May 24 22:11", "导入 JD 文本", "分类为岗位 JD，备注：字节低代码前端实习", "done"],
     ["TL-021-2", "OP-021", "May 24 22:13", "生成岗位草稿", "系统提取公司、岗位、城市、技能关键词和截止时间", "done"],
-    ["TL-021-3", "OP-021", "May 24 22:15", "确认进入岗位管理", "用户确认优先级 A，匹配度 HIGH，使用 FE Intern v7", "done"],
+    ["TL-021-3", "OP-021", "May 24 22:15", "确认进入岗位推进", "用户确认优先级 A，匹配度 HIGH，使用 FE Intern v7", "done"],
     ["TL-021-4", "OP-021", "Next", "补充项目指标后投递", "待补齐低代码项目的性能指标，再执行投递", "next"],
     ["TL-020-1", "OP-020", "May 20 19:40", "导入招聘链接", "分类为招聘链接，备注：增长产品实习", "done"],
     ["TL-020-2", "OP-020", "May 20 19:43", "确认岗位草稿", "提取岗位要求并选择 Product Hybrid v3", "done"],
@@ -765,10 +799,10 @@ const seedDatabase = (db) => {
     ["TL-020-5", "OP-020", "Next", "准备业务拆解和反问", "从本岗位 JD 和面试复盘生成练习任务", "next"],
     ["TL-019-1", "OP-019", "May 21 20:14", "导入招聘链接", "分类为招聘链接，备注：美团数据分析实习", "done"],
     ["TL-019-2", "OP-019", "May 21 20:16", "生成岗位草稿", "系统解析 JD，并保留原链接和 JD 原文", "done"],
-    ["TL-019-3", "OP-019", "May 21 20:18", "确认进入岗位管理", "确认城市北京、优先级 B、匹配度 HIGH", "done"],
+    ["TL-019-3", "OP-019", "May 21 20:18", "确认进入岗位推进", "确认城市北京、优先级 B、匹配度 HIGH", "done"],
     ["TL-019-4", "OP-019", "May 21 20:22", "选择简历版本", "本次投递使用 Data v2，突出 SQL、Python 和指标体系", "done"],
     ["TL-019-5", "OP-019", "May 21 20:35", "完成投递", "通过官网投递并同步给内推人", "done"],
-    ["TL-019-6", "OP-019", "May 24 09:00", "生成跟进动作", "三天后跟进内推人，已进入今日待办", "done"],
+    ["TL-019-6", "OP-019", "May 24 09:00", "生成跟进动作", "三天后跟进内推人，已进入今日行动", "done"],
     ["TL-018-1", "OP-018", "May 18 21:30", "导入 JD", "分类为岗位 JD，备注：快手 AI 产品运营", "done"],
     ["TL-018-2", "OP-018", "May 18 21:33", "确认岗位信息", "确认城市杭州、优先级 B、使用 Product Hybrid v3", "done"],
     ["TL-018-3", "OP-018", "May 19 09:20", "完成投递", "已提交材料并进入等待结果状态", "done"],
@@ -820,7 +854,7 @@ const seedDatabase = (db) => {
   );
 
   [
-    ["WT-101", "补齐字节岗位投递材料", "来自本周重点：前端实习 / 上海优先", "opportunity", "岗位管理", "OP-021", "open"],
+    ["WT-101", "补齐字节岗位投递材料", "来自本周重点：前端实习 / 上海优先", "opportunity", "岗位推进", "OP-021", "open"],
     ["WT-102", "练习项目结果表达", "来自本周练习主题：项目表达", "answer", "答案库", "AC-101", "open"],
   ].forEach((item) => insertTask.run(item[0], "WP-2026-06-02", ...item.slice(1), createdAt, createdAt));
 };
@@ -894,7 +928,7 @@ export const createRepository = (db) => {
         opportunityId,
         event.occurredAt?.trim() || "Now",
         event.title?.trim() || "岗位状态更新",
-        event.detail?.trim() || "岗位管理操作记录",
+        event.detail?.trim() || "岗位推进操作记录",
         event.status || "done",
         sequenceIso(index),
       ),
@@ -930,7 +964,7 @@ export const createRepository = (db) => {
       dueDate || null,
       input.resumeId || null,
       input.nextAction?.trim() || opportunityStatusNextAction[status] || "补齐材料后投递",
-      input.jdSummary?.trim() || "由岗位管理内上传材料解析生成的岗位记录。",
+      input.jdSummary?.trim() || "由岗位推进内上传材料解析生成的岗位记录。",
       input.jdText?.trim() || "待补充 JD 原文。",
       timestamp,
       timestamp,
@@ -1112,8 +1146,8 @@ export const createRepository = (db) => {
     const id = input.id || makeId("INT");
     db.prepare(`
       INSERT INTO interview_sessions (
-        id, opportunity_id, company, role, round, date, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, opportunity_id, company, role, round, date, review_priority, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.opportunityId || null,
@@ -1121,6 +1155,7 @@ export const createRepository = (db) => {
       input.role?.trim() || "未填写岗位",
       input.round?.trim() || "面试",
       input.date?.trim() || "Today",
+      normalizeOpportunityAction(input.reviewPriority, "P1"),
       timestamp,
       timestamp,
     );
@@ -1174,9 +1209,10 @@ export const createRepository = (db) => {
           role = ?,
           round = ?,
           date = ?,
+          review_priority = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(next.opportunityId || null, next.company, next.role, next.round, next.date, nowIso(), id);
+    `).run(next.opportunityId || null, next.company, next.role, next.round, next.date, normalizeOpportunityAction(next.reviewPriority, "P1"), nowIso(), id);
     return getInterview(id);
   };
 
@@ -1548,7 +1584,9 @@ export const createRepository = (db) => {
           updated_at = ?
       WHERE id = ?
     `).run(
-      Number(patch.targetApplications ?? current.target_applications) || 1,
+      Number.isFinite(Number(patch.targetApplications ?? current.target_applications))
+        ? Math.max(0, Math.round(Number(patch.targetApplications ?? current.target_applications)))
+        : 0,
       JSON.stringify(patch.focusDirections ?? parseJson(current.focus_directions_json)),
       JSON.stringify(patch.focusCities ?? parseJson(current.focus_cities_json)),
       JSON.stringify(patch.focusCompanies ?? parseJson(current.focus_companies_json)),
@@ -1580,7 +1618,7 @@ export const createRepository = (db) => {
       input.title?.trim() || "新增训练或杂项动作",
       input.detail?.trim() || "适合放练笔试、练英语、补材料等不属于具体岗位或面试的问题。",
       input.source || "manual",
-      input.sourceLabel?.trim() || "训练计划",
+      input.sourceLabel?.trim() || "本周计划",
       input.relatedEntityId ?? null,
       input.level || "P2",
       input.status || "open",
@@ -1690,6 +1728,9 @@ export const createRepository = (db) => {
         page: "opportunityDetail",
         filter: resolveOpportunityAction(item),
         source: "opportunity",
+        sourceLabel: `岗位推进 / ${item.company}`,
+        why: `${opportunityStatusLabel[item.status] || item.status}阶段仍有下一步动作，优先级由状态、截止时间、匹配度和主观优先级计算。`,
+        completionOutcome: opportunityCompletionOutcome(item.status),
         targetPage: "opportunityDetail",
         targetId: item.id,
       }));
@@ -1697,12 +1738,15 @@ export const createRepository = (db) => {
     const interviewActions = interviews
       .filter((session) => session.qaPairs.some((pair) => pair.weak))
       .map((session) => ({
-        level: "P1",
+        level: normalizeOpportunityAction(session.reviewPriority, "P1"),
         title: `复盘${session.company}${session.round}`,
         detail: `${session.qaPairs.filter((pair) => pair.weak).length} 个薄弱回答需要处理`,
         page: "interviews",
         filter: "",
         source: "interview",
+        sourceLabel: `面试复盘 / ${session.company}${session.round}`,
+        why: "复盘里还有标记为薄弱的问题，适合今天先补框架或重讲。",
+        completionOutcome: "完成后这些薄弱问题会被标记为已处理；如需持续练习，可加入本周计划。",
         targetPage: "interviews",
         targetId: session.id,
       }));
@@ -1715,6 +1759,9 @@ export const createRepository = (db) => {
         detail: `${task.sourceLabel}: ${task.detail}`,
         filter: "",
         source: "weekly",
+        sourceLabel: `${task.sourceLabel || "本周计划"} / ${task.source === "answer" ? "答案练习" : task.source === "interview" ? "面试练习" : "计划动作"}`,
+        why: weeklyTaskReason(task),
+        completionOutcome: "完成后会标记本周计划任务为 done，并从今日行动移除。",
         taskId: task.id,
         ...weeklyRoute(task),
       }));
@@ -1834,7 +1881,7 @@ export const createRepository = (db) => {
       `).run(
         planId,
         weeklyPlan.weekStart || backup.weekStart || new Date().toISOString().slice(0, 10),
-        Number(weeklyPlan.targetApplications ?? 1) || 1,
+        Number.isFinite(Number(weeklyPlan.targetApplications ?? 0)) ? Math.max(0, Math.round(Number(weeklyPlan.targetApplications ?? 0))) : 0,
         JSON.stringify(assertArray(weeklyPlan.focusDirections ?? [], "weeklyPlan.focusDirections")),
         JSON.stringify(assertArray(weeklyPlan.focusCities ?? [], "weeklyPlan.focusCities")),
         JSON.stringify(assertArray(weeklyPlan.focusCompanies ?? [], "weeklyPlan.focusCompanies")),

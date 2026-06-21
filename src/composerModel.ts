@@ -241,6 +241,7 @@ export const createModuleComposerDraft = (resumeId = "", opportunityId = ""): Mo
   priority: "B",
   match: "HIGH",
   action: "P1",
+  actionManual: false,
   resumeId,
   nextAction: "补齐信息后推进",
   sourceLabel: "模块内新增",

@@ -17,7 +17,7 @@ const withMockAiServer = async (handler, run) => {
 const checks = [
   ["/api/health", (data) => data.ok === true],
   ["/api/opportunities", (data) => Array.isArray(data) && data.length >= 1],
-  ["/api/interviews", (data) => Array.isArray(data) && data.length >= 1],
+  ["/api/interviews", (data) => Array.isArray(data) && data.length >= 1 && data.every((session) => ["P0", "P1", "P2", "P3"].includes(session.reviewPriority))],
   ["/api/answers", (data) => Array.isArray(data) && data.length >= 1],
   ["/api/answer-categories", (data) => Array.isArray(data) && data.some((category) => category.id === "CAT-UNCATEGORIZED" && category.system === true)],
   ["/api/resumes", (data) => Array.isArray(data) && data.length >= 1],
@@ -29,6 +29,7 @@ const checks = [
       Array.isArray(data) &&
       data.length >= 1 &&
       data.every((action) => action.page && action.filter !== undefined && action.source && action.level) &&
+      data.every((action) => action.sourceLabel && action.why && action.completionOutcome) &&
       data.every((action, index, actions) => index === 0 || ["P0", "P1", "P2", "P3"].indexOf(actions[index - 1].level) <= ["P0", "P1", "P2", "P3"].indexOf(action.level)),
   ],
   ["/api/backup", (data) => data && Array.isArray(data.opportunities) && Array.isArray(data.interviewSessions) && Array.isArray(data.answerCategories)],
@@ -1341,6 +1342,18 @@ const updatedPlan = await patchedPlan.json();
 if (!updatedPlan.focusDirections.includes(tempFocus)) throw new Error("PATCH /api/weekly-plan/current did not update focusDirections");
 console.log("PASS PATCH /api/weekly-plan/current");
 
+const zeroTargetPlan = await fetch(`${API_URL}/api/weekly-plan/current`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ targetApplications: 0 }),
+});
+if (!zeroTargetPlan.ok) throw new Error(`zero target PATCH /api/weekly-plan/current returned ${zeroTargetPlan.status}`);
+const zeroTargetPlanPayload = await zeroTargetPlan.json();
+if (zeroTargetPlanPayload.targetApplications !== 0) {
+  throw new Error("PATCH /api/weekly-plan/current should allow targetApplications to be 0");
+}
+console.log("PASS PATCH /api/weekly-plan/current allows zero target");
+
 const restoredPlan = await fetch(`${API_URL}/api/weekly-plan/current`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
@@ -1456,6 +1469,7 @@ const tempInterview = {
   role: "Temporary role",
   round: "API Check",
   date: "Today",
+  reviewPriority: "P2",
   sourceFiles: [
     {
       id: `FILE-CHECK-${Date.now()}`,
@@ -1490,16 +1504,35 @@ const createdInterviewPayload = await createdInterview.json();
 if (createdInterviewPayload.id !== tempInterview.id || createdInterviewPayload.qaPairs.length !== 1) {
   throw new Error("POST /api/interviews returned unexpected interview");
 }
+if (createdInterviewPayload.reviewPriority !== "P2") {
+  throw new Error("POST /api/interviews did not persist reviewPriority");
+}
 console.log("PASS POST /api/interviews");
 const interviewTodayActions = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
 if (
   !interviewTodayActions.some(
-    (action) => action.source === "interview" && action.targetId === tempInterview.id && action.detail.includes("1 个薄弱回答需要处理"),
+    (action) => action.source === "interview" && action.targetId === tempInterview.id && action.level === "P2" && action.detail.includes("1 个薄弱回答需要处理"),
   )
 ) {
-  throw new Error("weak interview QA should create pending review today action");
+  throw new Error("weak interview QA should create pending review today action with session priority");
 }
 console.log("PASS weak interview QA creates pending review action");
+
+const updatedInterviewPriority = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(tempInterview.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ reviewPriority: "P0" }),
+});
+if (!updatedInterviewPriority.ok) throw new Error(`PATCH interview review priority returned ${updatedInterviewPriority.status}`);
+const updatedInterviewPriorityPayload = await updatedInterviewPriority.json();
+if (updatedInterviewPriorityPayload.reviewPriority !== "P0") {
+  throw new Error("PATCH /api/interviews/:id did not update reviewPriority");
+}
+const interviewTodayActionsAfterPriority = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (!interviewTodayActionsAfterPriority.some((action) => action.source === "interview" && action.targetId === tempInterview.id && action.level === "P0")) {
+  throw new Error("interview today action did not use updated session reviewPriority");
+}
+console.log("PASS interview review priority drives today action");
 
 const clearedOriginalQa = await fetch(`${API_URL}/api/qa-pairs/${encodeURIComponent(tempInterview.qaPairs[0].id)}`, {
   method: "PATCH",

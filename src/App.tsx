@@ -110,6 +110,9 @@ import type {
   ModuleComposerDraft,
   ModuleComposerSource,
   Opportunity,
+  OpportunityAction,
+  OpportunityMatch,
+  OpportunityPriority,
   OpportunityStatus,
   Page,
   QaPair,
@@ -123,13 +126,24 @@ import type {
 } from "./types";
 
 const navItems: Array<{ id: Page; label: string; icon: typeof Home }> = [
-  { id: "home", label: "今日待办", icon: Home },
-  { id: "opportunities", label: "岗位管理", icon: BriefcaseBusiness },
+  { id: "home", label: "今日行动", icon: Home },
+  { id: "opportunities", label: "岗位推进", icon: BriefcaseBusiness },
   { id: "interviews", label: "面试复盘", icon: FileAudio },
   { id: "answers", label: "答案库", icon: Library },
   { id: "resumes", label: "简历版本", icon: FileText },
-  { id: "weekly", label: "训练计划", icon: CalendarClock },
+  { id: "weekly", label: "本周计划", icon: CalendarClock },
   { id: "exports", label: "设置备份", icon: FileDown },
+];
+
+const primaryNavItems = navItems.filter((item) => item.id === "home" || item.id === "opportunities" || item.id === "weekly");
+const libraryNavItems = navItems.filter((item) => item.id === "interviews" || item.id === "answers" || item.id === "resumes");
+const systemNavItems = navItems.filter((item) => item.id === "exports");
+
+const reviewPriorityOptions: Array<{ value: OpportunityAction; label: string }> = [
+  { value: "P0", label: "P0" },
+  { value: "P1", label: "P1" },
+  { value: "P2", label: "P2" },
+  { value: "P3", label: "P3" },
 ];
 
 const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根据我提供的面试录音转写稿，整理成一份结构化面试复盘。
@@ -169,13 +183,6 @@ const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根
 - improvedFramework：这题以后应该按什么结构回答。
 - polishedAnswer：基于原回答和合理补充，写出优化后的可背诵版本。
 - questionType：可选 BEHAVIORAL / PROJECT / TECHNICAL / MOTIVATION / PRODUCT。`;
-
-const workflowTabs = [
-  { page: "opportunities" as const, label: "岗位管理", hint: "录入 JD，推进投递" },
-  { page: "interviews" as const, label: "面试复盘", hint: "整理问答，发现问题" },
-  { page: "answers" as const, label: "答案库", hint: "沉淀可背答案" },
-  { page: "weekly" as const, label: "训练计划", hint: "安排练习与复盘" },
-] as const;
 
 type ApiDashboardSummary = Partial<DashboardSummary> & {
   weakQaCount?: number;
@@ -259,6 +266,22 @@ const todayActionSourceLabel = (action: TodayAction) => {
   return "待办";
 };
 
+const todayActionSourceDetail = (action: TodayAction) => action.sourceLabel || todayActionSourceLabel(action);
+
+const todayActionReason = (action: TodayAction) => {
+  if (action.why) return action.why;
+  if (action.source === "opportunity") return "岗位当前阶段还有下一步动作，优先级来自状态、截止时间和岗位权重。";
+  if (action.source === "interview") return "面试复盘中仍有薄弱或待处理问题。";
+  return "本周计划中有仍未完成的行动。";
+};
+
+const todayActionOutcome = (action: TodayAction) => {
+  if (action.completionOutcome) return action.completionOutcome;
+  if (action.source === "opportunity") return "完成后会推进岗位状态，并从今日行动移除。";
+  if (action.source === "interview") return "完成后会标记复盘问题已处理；需要长期练习时请加入本周计划。";
+  return "完成后会标记本周计划任务为 done。";
+};
+
 const historyTimelinePlaceholder = "10.1 投递岗位\n10.5 一面\n10.8 跟进 HR";
 
 const isTimelineOccurredAtPrefix = (value = "") => /^(\d{1,4}[./-]\d{1,2}(?:[./-]\d{1,2})?|\d{1,2}月\d{1,2}(?:日|号)?|Next)$/i.test(value);
@@ -302,8 +325,8 @@ const topSearchPlaceholder = (currentPage: Page) => {
 const opportunityFilterLabel = (value: string) => {
   const labels: Record<string, string> = {
     ALL: "全部",
-    P0: "今天要处理",
-    P1: "优先推进",
+    P0: "P0",
+    P1: "P1",
     "A PRIORITY": "高意愿",
     "HIGH MATCH": "高匹配",
     "DUE SOON": "快截止",
@@ -509,6 +532,9 @@ const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback: Today
       page,
       filter: action.filter ?? "",
       source: action.source ?? (page === "opportunityDetail" ? "opportunity" : page === "interviews" ? "interview" : "weekly"),
+      sourceLabel: action.sourceLabel,
+      why: action.why,
+      completionOutcome: action.completionOutcome,
       targetId: action.targetId,
       taskId: action.taskId,
     });
@@ -520,7 +546,6 @@ const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback: Today
 const GRID_PAGE_SIZE = 6;
 const WEEKLY_PRACTICE_FIRST_PAGE_TASKS = 5;
 const TABLE_PAGE_SIZE = 6;
-const TODAY_PAGE_SIZE = 8;
 
 const listPageCount = (length: number, pageSize: number) => Math.max(1, Math.ceil(length / pageSize));
 
@@ -608,10 +633,85 @@ function DatePickerInput({
   );
 }
 
+function OpportunityCombobox({
+  opportunities,
+  value,
+  onChange,
+  emptyLabel,
+  searchPlaceholder = "搜索公司、岗位或城市",
+}: {
+  opportunities: Opportunity[];
+  value: string;
+  onChange: (value: string) => void;
+  emptyLabel: string;
+  searchPlaceholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const selectedOpportunity = opportunities.find((opportunity) => opportunity.id === value);
+  const filteredOpportunities = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) return opportunities;
+    return opportunities.filter((opportunity) => {
+      if (opportunity.id === value) return true;
+      return `${opportunity.company} ${opportunity.title} ${opportunity.city}`.toLowerCase().includes(keyword);
+    });
+  }, [opportunities, search, value]);
+
+  const chooseOpportunity = (nextValue: string) => {
+    onChange(nextValue);
+    setOpen(false);
+    setSearch("");
+  };
+
+  return (
+    <div className="opportunity-combobox">
+      <button type="button" className="opportunity-combobox-trigger" onClick={() => setOpen((visible) => !visible)} aria-expanded={open}>
+        <span>{selectedOpportunity ? `${selectedOpportunity.company} / ${selectedOpportunity.title}` : emptyLabel}</span>
+        <ChevronDown size={16} />
+      </button>
+      {open ? (
+        <div className="opportunity-combobox-menu">
+          <input
+            autoFocus
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setOpen(false);
+                setSearch("");
+              }
+            }}
+            placeholder={searchPlaceholder}
+          />
+          <button type="button" className={!value ? "selected-option" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseOpportunity("")}>
+            {emptyLabel}
+          </button>
+          {filteredOpportunities.map((opportunity) => (
+            <button
+              type="button"
+              className={opportunity.id === value ? "selected-option" : ""}
+              key={opportunity.id}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseOpportunity(opportunity.id)}
+            >
+              <strong>{opportunity.company} / {opportunity.title}</strong>
+              <span>{opportunity.city} · {statusLabel[opportunity.status]}</span>
+            </button>
+          ))}
+          {filteredOpportunities.length === 0 ? <p>没有匹配的岗位</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState<Page>("home");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [libraryNavOpen, setLibraryNavOpen] = useState(true);
+  const [showMoreTodayActions, setShowMoreTodayActions] = useState(false);
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(seedOpportunities[0].id);
   const [opportunityHistoryDrafts, setOpportunityHistoryDrafts] = useState<Record<string, string>>({});
@@ -624,7 +724,6 @@ function App() {
   const [opportunityPage, setOpportunityPage] = useState(0);
   const [weeklyInterviewPage, setWeeklyInterviewPage] = useState(0);
   const [weeklyPracticePage, setWeeklyPracticePage] = useState(0);
-  const [todayPage, setTodayPage] = useState(0);
   const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
   const [answerView, setAnswerView] = useState<"list" | "detail">("list");
   const [randomPracticeAnswerId, setRandomPracticeAnswerId] = useState("");
@@ -650,6 +749,7 @@ function App() {
   const [resumeList, setResumeList] = useState<ResumeVersion[]>(resumeVersions);
   const [selectedResumeId, setSelectedResumeId] = useState(resumeVersions[0].id);
   const [weeklyPlan, setWeeklyPlan] = useState<WeeklyPlan>(baseWeeklyPlan);
+  const [weeklyTargetDraft, setWeeklyTargetDraft] = useState(String(Math.max(0, baseWeeklyPlan.targetApplications)));
   const [apiDashboardSummary, setApiDashboardSummary] = useState<ApiDashboardSummary | null>(null);
   const [apiTodayActions, setApiTodayActions] = useState<ApiTodayAction[] | null>(null);
   const [previewAsset, setPreviewAsset] = useState<SourceAsset | null>(null);
@@ -780,7 +880,7 @@ function App() {
     if (!isApiEnabled) return;
     void getWeeklyPlanApi()
       .then(setWeeklyPlan)
-      .catch(() => setSystemMessage("训练计划已保存在本机"));
+      .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
   const selectedOpportunity = opportunities.find((item) => item.id === selectedOpportunityId) ?? opportunities[0];
@@ -805,6 +905,14 @@ function App() {
   const localTodayActions = selectTodayActions(opportunities, interviewSessions, answerCards, weeklyPlan, resumeList);
   const hydratedTodayActions = normalizeTodayActions(apiTodayActions, localTodayActions);
   const todayActions = hydratedTodayActions.filter((action) => !dismissedTodayIds.has(todayActionKey(action)));
+  const hasWeeklyTarget = weeklyPlan.targetApplications > 0;
+  const weeklyTargetApplications = Math.max(0, weeklyPlan.targetApplications);
+  const weeklyProgressPercent = hasWeeklyTarget ? Math.min(100, (submittedApplications / weeklyTargetApplications) * 100) : 0;
+  useEffect(() => {
+    setWeeklyTargetDraft(String(weeklyTargetApplications));
+  }, [weeklyTargetApplications]);
+  const topTodayActions = todayActions.slice(0, 3);
+  const moreTodayActions = todayActions.slice(3);
   const normalizedQuery = query.trim().toLowerCase();
   const sortAnswerCategories = (left: AnswerCategory, right: AnswerCategory) =>
     left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, "zh-Hans-CN") || left.id.localeCompare(right.id);
@@ -933,10 +1041,6 @@ function App() {
   const visibleOpportunities = opportunityList.visible;
   const opportunityPageCount = opportunityList.pageCount;
   const safeOpportunityPage = opportunityList.safePage;
-  const todayList = paginateList(todayActions, todayPage, TODAY_PAGE_SIZE);
-  const visibleTodayActions = todayList.visible;
-  const todayPageCount = todayList.pageCount;
-  const safeTodayPage = todayList.safePage;
 
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
@@ -976,7 +1080,7 @@ function App() {
     setComposerSource((source) => ({ ...source, [field]: value } as ModuleComposerSource));
   };
 
-  const updateComposerDraft = (field: keyof ModuleComposerDraft, value: string) => {
+  const updateComposerDraft = <Field extends keyof ModuleComposerDraft>(field: Field, value: ModuleComposerDraft[Field]) => {
     setComposerDraft((draft) => ({ ...draft, [field]: value } as ModuleComposerDraft));
   };
 
@@ -1413,6 +1517,7 @@ function App() {
 
   const updateSelectedInterview = (patch: Partial<InterviewSession>) => {
     setInterviewSessions((sessions) => sessions.map((session) => (session.id === selectedInterview.id ? { ...session, ...patch } : session)));
+    if ("reviewPriority" in patch) invalidateApiInsights();
     syncUpdatedInterviewSession(selectedInterview.id, patch);
   };
 
@@ -1672,25 +1777,25 @@ function App() {
   const syncWeeklyPlanPatch = (patch: Partial<Omit<WeeklyPlan, "tasks">>) => {
     void updateWeeklyPlanApi(patch)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("训练计划已保存在本机"));
+      .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
   const syncCreatedWeeklyTask = (task: WeeklyTask) => {
     void createWeeklyTaskApi(task)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("训练计划已保存在本机"));
+      .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
   const syncUpdatedWeeklyTask = (id: string, patch: Partial<WeeklyTask>) => {
     void updateWeeklyTaskApi(id, patch)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("训练计划已保存在本机"));
+      .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
   const syncDeletedWeeklyTask = (id: string) => {
     void deleteWeeklyTaskApi(id)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("训练计划已保存在本机"));
+      .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
   const syncCreatedResumeVersion = (resume: ResumeVersion) => {
@@ -2135,6 +2240,7 @@ function App() {
         `## ${index + 1}. ${session.company} / ${session.role} / ${session.round}`,
         "",
         `- 日期：${session.date}`,
+        `- 复盘优先级：${session.reviewPriority ?? "P1"}`,
         `- 关联岗位：${session.opportunityId ?? "未关联"}`,
         `- 原始材料：${session.sourceFiles?.map((file) => file.fileName).join("、") || "无"}`,
         "",
@@ -2174,7 +2280,7 @@ function App() {
       title: preset?.title?.trim() || "新的练习动作",
       detail: preset?.detail?.trim() || "写下今天准备推进的一件小事。",
       source: "manual",
-      sourceLabel: "训练计划",
+      sourceLabel: "本周计划",
       level: preset?.level ?? "P2",
       status: "open",
     };
@@ -2282,18 +2388,28 @@ function App() {
   };
 
   const updateWeeklyTargetApplications = (targetApplications: number) => {
-    const nextTarget = targetApplications || 1;
+    const nextTarget = Number.isFinite(targetApplications) ? Math.max(0, Math.round(targetApplications)) : 0;
     setWeeklyPlan((plan) => ({ ...plan, targetApplications: nextTarget }));
     invalidateApiInsights();
     syncWeeklyPlanPatch({ targetApplications: nextTarget });
   };
 
+  const updateWeeklyTargetDraft = (value: string) => {
+    setWeeklyTargetDraft(value);
+    if (value.trim() === "") return;
+    updateWeeklyTargetApplications(Number(value));
+  };
+
+  const restoreWeeklyTargetDraft = () => {
+    if (weeklyTargetDraft.trim() === "") setWeeklyTargetDraft(String(weeklyTargetApplications));
+  };
+
   const promoteFocusToTask = (label: string, value: string) => {
     createWeeklyTask({
       title: `推进${value}`,
-      detail: `由训练计划的「${label}」生成，今天可以拆成一个具体动作。`,
+      detail: `由本周计划的「${label}」生成，今天可以拆成一个具体动作。`,
       source: "weekly-focus",
-      sourceLabel: "训练计划",
+      sourceLabel: "本周计划",
       level: "P2",
     });
   };
@@ -2304,15 +2420,16 @@ function App() {
       return;
     }
 
-    const now = formatNow();
+    const now = todayDateKey();
     const dueDate = composerDraft.dueDate || inferDueDateFromText(composerDraft.deadline);
-    const action = computeOpportunityAction({
+    const suggestedAction = computeOpportunityAction({
       status: "TO APPLY",
       deadline: composerDraft.deadline,
       dueDate,
       match: composerDraft.match,
       priority: composerDraft.priority,
     });
+    const action = composerDraft.actionManual && composerDraft.action ? composerDraft.action : suggestedAction;
     const sourceKind: SourceAsset["kind"] =
       composerSource.sourceKind === "screenshot" ? "screenshot" : composerSource.sourceKind === "job-link" ? "job-link" : "jd-text";
     const nextOpportunity: Opportunity = {
@@ -2323,6 +2440,7 @@ function App() {
       priority: composerDraft.priority,
       match: composerDraft.match,
       action,
+      actionManual: Boolean(composerDraft.actionManual),
       city: composerDraft.city.trim() || "待定",
       deadline: composerDraft.deadline.trim(),
       dueDate,
@@ -2342,7 +2460,7 @@ function App() {
         },
       ],
       timeline: [
-        { id: makeId("TL"), occurredAt: now, title: "写入岗位管理", detail: "必填信息满足后直接生成正式岗位记录", status: "done" },
+        { id: makeId("TL"), occurredAt: now, title: "写入岗位推进", detail: "必填信息满足后直接生成正式岗位记录", status: "done" },
         { id: makeId("TL"), occurredAt: "Next", title: composerDraft.nextAction.trim() || "补齐材料后投递", detail: "当前进度的备注", status: "next" },
       ],
     };
@@ -2424,6 +2542,7 @@ function App() {
       role: composerDraft.role.trim(),
       round: composerDraft.round.trim(),
       date: composerDraft.date.trim() || "Today",
+      reviewPriority: "P1",
       sourceFiles,
       qaPairs,
     };
@@ -2513,7 +2632,7 @@ function App() {
   ) => {
     const targetOpportunity = opportunities.find((item) => item.id === opportunityId);
     if (!targetOpportunity) return;
-    const now = formatNow();
+    const now = todayDateKey();
     const nextAction = opportunityStatusNextAction[status];
     const nextActionLevel = targetOpportunity.actionManual
       ? targetOpportunity.action
@@ -2652,6 +2771,83 @@ function App() {
 
     setDismissedTodayIds((ids) => new Set(ids).add(todayActionKey(action)));
     setSystemMessage("今日已暂不显示");
+  };
+
+  const homeGoalCta = !hasWeeklyTarget
+    ? {
+        label: "设置本周目标",
+        icon: CalendarClock,
+        action: () => goTo("weekly"),
+      }
+    : applicationGap > 0
+      ? {
+          label: "去投下一个岗位",
+          icon: BriefcaseBusiness,
+          action: () => {
+            if (toApplyCount > 0) {
+              setFilter("P0");
+              goTo("opportunities");
+              return;
+            }
+            openComposer("opportunity");
+          },
+        }
+      : todayActions.length > 0
+        ? {
+            label: "完成第一项行动",
+            icon: Check,
+            action: () => openTodayAction(todayActions[0]),
+          }
+        : {
+            label: "添加自训练",
+            icon: Plus,
+            action: openWeeklyTaskDialog,
+          };
+  const HomeGoalCtaIcon = homeGoalCta.icon;
+  const homeGoalTitle = !hasWeeklyTarget
+    ? "先定一个本周投递目标"
+    : applicationGap > 0
+      ? `这周还差 ${applicationGap} 个投递`
+      : "本周投递目标已完成";
+
+  const homeEmptyState = !hasWeeklyTarget
+    ? {
+        title: "先定一个本周投递目标",
+        detail: "不设置也能继续使用今日行动；设定目标后，首页会告诉你本周还差多少次投递。",
+        primaryLabel: "去设置目标",
+        primaryAction: () => goTo("weekly"),
+        secondaryLabel: "新增岗位",
+        secondaryAction: () => openComposer("opportunity"),
+      }
+    : applicationGap > 0
+      ? {
+          title: "今天还没有行动，先补岗位来源",
+          detail: `本周还差 ${applicationGap} 个投递，可以先新增一个岗位，把下一步投递动作放进今日行动。`,
+          primaryLabel: "去投下一个岗位",
+          primaryAction: () => openComposer("opportunity"),
+          secondaryLabel: "查看岗位推进",
+          secondaryAction: () => goTo("opportunities"),
+        }
+      : {
+          title: "目标已达成，今天没有待办",
+          detail: "可以添加一条自训练，或上传面试复盘，把需要练的问题纳入本周计划。",
+          primaryLabel: "添加自训练",
+          primaryAction: openWeeklyTaskDialog,
+          secondaryLabel: "导入面试复盘",
+          secondaryAction: () => openComposer("interview"),
+        };
+
+  const isNavItemActive = (id: Page) => page === id || (page === "opportunityDetail" && id === "opportunities");
+  const libraryNavActive = libraryNavItems.some((item) => isNavItemActive(item.id));
+  const renderNavButton = (item: (typeof navItems)[number], className = "") => {
+    const Icon = item.icon;
+    const active = isNavItemActive(item.id);
+    return (
+      <button key={item.id} className={`nav-item ${className} ${active ? "active" : ""}`} onClick={() => goTo(item.id)}>
+        <Icon size={18} />
+        <span className="nav-label">{item.label}</span>
+      </button>
+    );
   };
 
   const addSelectedQaToPractice = () => {
@@ -2848,16 +3044,21 @@ function App() {
         </div>
 
         <nav className="nav">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = page === item.id || (page === "opportunityDetail" && item.id === "opportunities");
-            return (
-              <button key={item.id} className={`nav-item ${active ? "active" : ""}`} onClick={() => goTo(item.id)}>
-                <Icon size={18} />
-                <span className="nav-label">{item.label}</span>
-              </button>
-            );
-          })}
+          <div className="nav-group nav-group-primary">{primaryNavItems.map((item) => renderNavButton(item))}</div>
+          <div className={`nav-group nav-group-library ${libraryNavActive ? "has-active-child" : ""}`}>
+            <button
+              type="button"
+              className={`nav-section-toggle ${libraryNavActive && !libraryNavOpen ? "active" : ""}`}
+              aria-expanded={libraryNavOpen}
+              onClick={() => setLibraryNavOpen((open) => !open)}
+            >
+              {libraryNavOpen ? <FolderOpen size={18} /> : <Folder size={18} />}
+              <span className="nav-label">资料库</span>
+              <ChevronDown size={14} />
+            </button>
+            {libraryNavOpen ? <div className="nav-subitems">{libraryNavItems.map((item) => renderNavButton(item, "nav-subitem"))}</div> : null}
+          </div>
+          <div className="nav-group nav-group-system">{systemNavItems.map((item) => renderNavButton(item, "nav-system-item"))}</div>
         </nav>
 
         <div className="sidebar-footer">
@@ -2897,136 +3098,167 @@ function App() {
 
         {page === "home" && (
           <section className="home-stack">
-            <section className="flow-pipeline workflow-tabs" aria-label="求职闭环">
-              <div className="flow-pipeline-intro">
-                <span className="eyebrow">求职闭环</span>
-                <p>从岗位到复盘、答案沉淀和训练计划；今日待办会把各模块里该推进的事收在一起。</p>
+            <section className="home-goal-panel surface">
+              <div className="home-goal-heading">
+                <div>
+                  <span className="eyebrow">本周投递进度</span>
+                  <h1>{homeGoalTitle}</h1>
+                </div>
+                <strong>{submittedApplications} / {hasWeeklyTarget ? weeklyTargetApplications : "未设置"}</strong>
               </div>
-              <ol className="flow-pipeline-steps">
-                {workflowTabs.map((step, index) => (
-                  <li key={step.page} className="flow-step">
-                    <button type="button" className="flow-step-button" onClick={() => goTo(step.page)}>
-                      <span className="flow-step-index" aria-hidden="true">
-                        {index + 1}
-                      </span>
-                      <div className="flow-step-copy">
-                        <strong>{step.label}</strong>
-                        <span>{step.hint}</span>
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ol>
+              <p className="home-goal-summary">先对齐目标和进度，再处理今天需要推进的事。</p>
+              <div className="home-goal-meter" aria-label="本周投递进度">
+                <div className="linear-progress" aria-hidden="true">
+                  <span style={{ width: `${weeklyProgressPercent}%` }} />
+                </div>
+                <div className="home-goal-stats">
+                  <span>本周目标：{hasWeeklyTarget ? `${weeklyTargetApplications} 个岗位` : "未设置"}</span>
+                  <span>已完成：{submittedApplications} 个</span>
+                  <span>还差：{hasWeeklyTarget ? (applicationGap > 0 ? `${applicationGap} 个` : "已达标") : "先设置目标"}</span>
+                </div>
+              </div>
+              <div className="home-goal-controls">
+                <label>
+                  <span>编辑目标</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={weeklyTargetDraft}
+                    onBlur={restoreWeeklyTargetDraft}
+                    onChange={(event) => updateWeeklyTargetDraft(event.target.value)}
+                    aria-label="本周投递目标"
+                  />
+                </label>
+                <button className="primary-button" onClick={homeGoalCta.action}>
+                  <HomeGoalCtaIcon size={16} />
+                  <span>{homeGoalCta.label}</span>
+                </button>
+                <button className="secondary-button" onClick={() => goTo("weekly")}>
+                  <CalendarClock size={16} />
+                  <span>调整本周目标</span>
+                </button>
+              </div>
             </section>
 
-            <section className="home-main">
-              <div className="today-panel surface paginated-pane">
-                <div className="paginated-pane-header">
-                  <div className="eyebrow">今日待办</div>
-                  <div className="today-heading">
-                    <div>
-                      <h1>今天先处理这几件事</h1>
-                      <p>这里会集中显示你今天最应该推进的投递、复盘和练习。</p>
-                    </div>
-                    <div className="hero-number small">{todayActions.length}</div>
+            <section className="today-focus surface">
+              <div className="today-focus-header">
+                <div>
+                  <div className="title-with-help">
+                    <span className="eyebrow">今日行动</span>
+                    <span
+                      className="field-tooltip today-help"
+                      tabIndex={0}
+                      data-tooltip="今日行动不是手动待办清单，而是从岗位阶段、面试复盘里的待处理问题和本周计划任务自动生成。答案卡不会直接提醒你练习；加入本周计划后，才会出现在这里。"
+                      aria-label="今日行动生成规则"
+                    >
+                      ?
+                    </span>
                   </div>
-                  <div className="hero-actions">
-                    <button className="primary-button" onClick={() => openComposer("opportunity")}>
-                      <BriefcaseBusiness size={16} />
-                      <span>新增岗位</span>
-                    </button>
-                    <button className="secondary-button" onClick={() => goTo("opportunities")}>
-                      <BriefcaseBusiness size={16} />
-                      <span>查看岗位</span>
-                    </button>
-                  </div>
+                  <h2>今天先推进这几件事</h2>
+                  <p>无需手动列清单，JobPilot 会根据岗位进度、复盘、本周计划和你指定的任务优先级安排今天要做的事。</p>
                 </div>
-                <div className="paginated-pane-body">
-                  <div className="action-list attached paginated-pane-content today-action-list">
-                    {visibleTodayActions.map((action) => (
-                      <div className="action-row" key={todayActionKey(action)}>
-                        <button className="action-row-main" onClick={() => openTodayAction(action)}>
-                          <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
-                          <span className="action-copy">
-                            <strong>
-                              <em className="source-chip">{todayActionSourceLabel(action)}</em>
-                              {action.title}
-                            </strong>
-                            <small>{action.detail}</small>
+                <div className="hero-number small">{todayActions.length}</div>
+              </div>
+
+              {topTodayActions.length > 0 ? (
+                <>
+                  <div className="today-card-list">
+                    {topTodayActions.map((action, index) => (
+                      <article className={`today-action-card today-source-${action.source}`} key={todayActionKey(action)}>
+                        <span className="today-action-rank">{String(index + 1).padStart(2, "0")}</span>
+                        <button className="today-action-open" onClick={() => openTodayAction(action)}>
+                          <span className="today-action-icon" aria-hidden="true">
+                            {action.source === "opportunity" ? <BriefcaseBusiness size={16} /> : action.source === "interview" ? <FileAudio size={16} /> : <CalendarClock size={16} />}
                           </span>
-                          <ChevronRight size={16} />
+                          <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                          <span className="source-chip">{todayActionSourceLabel(action)}</span>
+                          <h3>{action.title}</h3>
                         </button>
+                        <details className="today-action-context">
+                          <summary>查看来源和下一步</summary>
+                          <dl>
+                            <div>
+                              <dt>来源</dt>
+                              <dd>{todayActionSourceDetail(action)}</dd>
+                            </div>
+                            <div>
+                              <dt>为什么出现</dt>
+                              <dd>{todayActionReason(action)}</dd>
+                            </div>
+                            <div>
+                              <dt>完成后</dt>
+                              <dd>{todayActionOutcome(action)}</dd>
+                            </div>
+                          </dl>
+                        </details>
                         <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
                           完成
                         </button>
-                      </div>
+                      </article>
                     ))}
                   </div>
-                </div>
-                <ListPager alwaysShow className="paginated-pane-footer" page={safeTodayPage} pageCount={todayPageCount} onPageChange={setTodayPage} />
-              </div>
 
-              <aside className="home-side">
-                <div className="instrument-panel compact-metrics">
-                  <button className="metric" onClick={() => goTo("opportunities")}>
-                    <span>正式岗位</span>
-                    <strong className="success">{opportunities.length}</strong>
-                    <small>待投递 {toApplyCount} · 进行中 {inProgressCount}</small>
-                  </button>
-                  <button
-                    className="metric"
-                    onClick={() => {
-                      setFilter("P0");
-                      goTo("opportunities");
-                    }}
-                  >
-                    <span>高优先级岗位</span>
-                    <strong className="accent">{urgentCount}</strong>
-                    <small>P0 {p0Count} · P1 {p1Count}</small>
-                  </button>
-                  <button className="metric" onClick={() => goTo("interviews")}>
-                    <span>薄弱回答</span>
-                    <strong className="warning">{pendingReviewCount}</strong>
-                    <small>来自 {weakInterviewCount} 场面试</small>
-                  </button>
-                </div>
-
-                <div className="surface todo-rule-card">
-                  <SectionTitle label="今日待办" title="待办从哪里来" action="自动汇总" />
-                  <div className="todo-rule-list">
-                    <button onClick={() => goTo("opportunities")}>
-                      <span className="source-chip">岗位</span>
-                      <strong>岗位进度</strong>
-                      <small>待投递，以及需准备笔试、面试的岗位，会自动生成跟进待办。</small>
+                  {moreTodayActions.length > 0 ? (
+                    <div className="today-more-panel">
+                      <button className="ghost-button today-more-toggle" onClick={() => setShowMoreTodayActions((visible) => !visible)}>
+                        {showMoreTodayActions ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                        <span>{showMoreTodayActions ? "收起更多行动" : `还有 ${moreTodayActions.length} 条行动`}</span>
+                      </button>
+                      {showMoreTodayActions ? (
+                        <div className="action-list today-secondary-list">
+                          {moreTodayActions.map((action) => (
+                            <div className="action-row" key={todayActionKey(action)}>
+                              <button className="action-row-main" onClick={() => openTodayAction(action)}>
+                                <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                                <span className="action-copy">
+                                  <strong>
+                                    <em className="source-chip">{todayActionSourceLabel(action)}</em>
+                                    {action.title}
+                                  </strong>
+                                </span>
+                                <ChevronRight size={16} />
+                              </button>
+                              <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                                完成
+                              </button>
+                              <details className="today-action-context today-secondary-context">
+                                <summary>查看来源和下一步</summary>
+                                <dl>
+                                  <div>
+                                    <dt>来源</dt>
+                                    <dd>{todayActionSourceDetail(action)}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>为什么出现</dt>
+                                    <dd>{todayActionReason(action)}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>完成后</dt>
+                                    <dd>{todayActionOutcome(action)}</dd>
+                                  </div>
+                                </dl>
+                              </details>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="empty-state home-empty-state">
+                  <h3>{homeEmptyState.title}</h3>
+                  <p>{homeEmptyState.detail}</p>
+                  <div className="button-row">
+                    <button className="primary-button" onClick={homeEmptyState.primaryAction}>
+                      {homeEmptyState.primaryLabel}
                     </button>
-                    <button onClick={() => goTo("interviews")}>
-                      <span className="source-chip">面试</span>
-                      <strong>面试复盘</strong>
-                      <small>复盘中标记为薄弱的问题，会自动加入今日待办。</small>
-                    </button>
-                    <button onClick={() => goTo("weekly")}>
-                      <span className="source-chip">训练</span>
-                      <strong>训练计划</strong>
-                      <small>可手动添加训练任务，也可从面试复盘或答案库加入，自动同步到今日待办。</small>
+                    <button className="secondary-button" onClick={homeEmptyState.secondaryAction}>
+                      {homeEmptyState.secondaryLabel}
                     </button>
                   </div>
                 </div>
-
-                <button
-                  type="button"
-                  className="surface weekly-strip weekly-strip-button"
-                  onClick={() => goTo("weekly")}
-                >
-                  <SectionTitle label="训练计划" title="本周投递目标" action={`${submittedApplications}/${weeklyPlan.targetApplications}`} />
-                  <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
-                  <div className="stat-rows">
-                    <StatRow label="已投递" value={submittedApplications} />
-                    <StatRow label="本周目标" value={weeklyPlan.targetApplications} />
-                    <StatRow label="还差" value={applicationGap > 0 ? `${applicationGap} 个` : "已达标"} />
-                    <StatRow label="本周面试" value="2" />
-                  </div>
-                </button>
-              </aside>
+              )}
             </section>
           </section>
         )}
@@ -3035,7 +3267,7 @@ function App() {
           <section className="surface table-page paginated-pane">
             <div className="paginated-pane-header">
               <PageIntro
-                label="岗位管理"
+                label="岗位推进"
                 title="你正在跟进的岗位"
                 detail="按优先级、匹配度和截止时间管理投递备注。"
                 action={`${filteredOpportunities.length} 个岗位`}
@@ -3106,7 +3338,7 @@ function App() {
             <div className="surface">
               <button className="ghost-button back-button" onClick={() => goTo("opportunities")}>
                 <ChevronLeft size={16} />
-                <span>返回岗位管理</span>
+                <span>返回岗位推进</span>
               </button>
               <PageIntro
                 label={selectedOpportunity.id}
@@ -3181,10 +3413,10 @@ function App() {
                     }}
                   >
                     <option value="AUTO">自动（建议 {selectedOpportunitySuggestedAction}）</option>
-                    <option value="P0">P0 · 今天必须做</option>
-                    <option value="P1">P1 · 今天优先</option>
-                    <option value="P2">P2 · 可排进今天</option>
-                    <option value="P3">P3 · 暂不推进</option>
+                    <option value="P0">P0</option>
+                    <option value="P1">P1</option>
+                    <option value="P2">P2</option>
+                    <option value="P3">P3</option>
                   </select>
                 </label>
                 <label>
@@ -3243,9 +3475,9 @@ function App() {
                 </div>
                 <p className="opportunity-progress-note">
                   {selectedOpportunity.status === "TO APPLY"
-                    ? "今日待办里点完成后，会同步标记为已投递。"
+                    ? "今日行动里点完成后，会同步标记为已投递。"
                     : selectedOpportunity.status === "WRITTEN TEST"
-                      ? "完成笔试待办后，会推进到筛选中。"
+                      ? "完成笔试行动后，会推进到筛选中。"
                       : selectedOpportunity.status === "SCREENING"
                         ? "筛选通过后，可以手动切到准备面试并生成面试准备待办。"
                       : "阶段有变化时，可以直接点击上面的节点更新。"}
@@ -3297,6 +3529,8 @@ function App() {
                     title="记录每一场面试"
                     detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
                     action={`${interviewSessions.length} 场面试`}
+                    helpTooltip="待处理问题指复盘中被标记为薄弱、还需要整理或练习的问题。只要一场面试还有待处理问题，它就会进入今日行动；标记已处理后会从今日行动中移除。"
+                    helpLabel="待处理问题说明"
                   />
 
                   <div className="button-row tight-row">
@@ -3365,19 +3599,27 @@ function App() {
                         <span>日期</span>
                         <input value={selectedInterview.date} onChange={(event) => updateSelectedInterview({ date: event.target.value })} />
                       </label>
-                      <label className="wide-field">
-                        <span>关联岗位</span>
+                      <label>
+                        <span>复盘优先级</span>
                         <select
-                          value={selectedInterview.opportunityId ?? ""}
-                          onChange={(event) => updateSelectedInterview({ opportunityId: event.target.value || undefined })}
+                          value={selectedInterview.reviewPriority ?? "P1"}
+                          onChange={(event) => updateSelectedInterview({ reviewPriority: event.target.value as OpportunityAction })}
                         >
-                          <option value="">未关联岗位</option>
-                          {opportunities.map((opportunity) => (
-                            <option key={opportunity.id} value={opportunity.id}>
-                              {opportunity.company} / {opportunity.title}
+                          {reviewPriorityOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
                             </option>
                           ))}
                         </select>
+                      </label>
+                      <label>
+                        <span>关联岗位</span>
+                        <OpportunityCombobox
+                          opportunities={opportunities}
+                          value={selectedInterview.opportunityId ?? ""}
+                          onChange={(value) => updateSelectedInterview({ opportunityId: value || undefined })}
+                          emptyLabel="未关联岗位"
+                        />
                       </label>
                     </div>
 
@@ -3580,7 +3822,7 @@ function App() {
                   <PageIntro
                     label={selectedAnswerCategoryLabel}
                     title="沉淀可复用回答"
-                    detail={isAllAnswerCategorySelected ? "当前显示全部答案卡；选择具体分类时会只看该分类及其子分类。" : "当前显示所选分类及其子分类里的答案卡。"}
+                    detail="答案卡可以手动添加，也可以从面试复盘生成；可随机抽练，或加入本周计划形成练习行动。"
                     action={`${filteredAnswerCards.length}/${selectedAnswerCategoryTotal} 张卡片`}
                   />
                   <div className="button-row tight-row">
@@ -3611,7 +3853,7 @@ function App() {
                         <h3>{randomPracticeSpinning ? "正在洗牌抽题..." : randomPracticeCard?.question}</h3>
                         <p>
                           {randomPracticeSpinning
-                            ? "从当前答案库里随机挑一张，不会加入训练计划。"
+                            ? "从当前答案库里随机挑一张，不会加入本周计划。"
                             : randomPracticeCard?.framework}
                         </p>
                       </div>
@@ -3717,7 +3959,7 @@ function App() {
                 <div className="button-row">
                   <button className="secondary-button" onClick={addSelectedAnswerToPractice}>
                     <ClipboardList size={16} />
-                    <span>加入训练计划</span>
+                    <span>加入本周计划</span>
                   </button>
                 </div>
 
@@ -3747,8 +3989,8 @@ function App() {
             <div className="surface resume-list-pane">
               <PageIntro
                 label="简历版本"
-                title="管理你上传的几份不同简历文件"
-                detail="这里存的是简历文件本身和它的定位。某个岗位实际用了哪版简历，会在岗位详情里作为投递记录出现。"
+                title="简历档案库"
+                detail="保存不同投递版本，记录每版简历适合的方向和实际使用岗位。"
                 action={`${resumeList.length} 份简历`}
               />
               <div className="button-row tight-row">
@@ -3781,12 +4023,14 @@ function App() {
             </div>
 
             <div className="surface resume-detail-pane">
-              <SectionTitle label={selectedResume.id} title={selectedResume.name} action={selectedResume.fileType} />
-              <div className="file-preview">
-                <FileText size={28} />
+              <div className="resume-dossier-head">
+                <div className="resume-file-badge">
+                  <FileText size={24} />
+                </div>
                 <div>
-                  <strong>{selectedResume.fileName}</strong>
-                  <small>{selectedResume.fileSize} / uploaded {selectedResume.uploadedAt}</small>
+                  <span className="eyebrow">{selectedResume.fileType} · {selectedResume.fileSize}</span>
+                  <h2>{selectedResume.name}</h2>
+                  <p>{selectedResume.fileName} · 上传于 {selectedResume.uploadedAt}</p>
                 </div>
                 <button className="secondary-button compact-button" onClick={() => openStoredFile(selectedResume.storageUri)}>预览文件</button>
               </div>
@@ -3834,23 +4078,25 @@ function App() {
             <div className="surface weekly-board paginated-pane">
               <div className="paginated-pane-header">
                 <PageIntro
-                  label="训练计划"
+                  label="本周计划"
                   title="安排本周要练的事"
-                  detail="训练计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
+                  detail="本周计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
                   action={`${visibleTrainingTaskCount} 待完成`}
                 />
                 <div className="weekly-overview">
                   <div className="weekly-progress-card">
                     <span>本周投递</span>
-                    <strong>{submittedApplications}/{weeklyPlan.targetApplications}</strong>
-                    <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
+                    <strong>{submittedApplications}/{weeklyTargetApplications}</strong>
+                    <SegmentedProgress value={weeklyTargetApplications > 0 ? (submittedApplications / weeklyTargetApplications) * 100 : 0} segments={12} />
                   </div>
                   <label className="weekly-goal-card">
                     <span>目标</span>
                     <input
                       type="number"
-                      value={weeklyPlan.targetApplications}
-                      onChange={(event) => updateWeeklyTargetApplications(Number(event.target.value))}
+                      min="0"
+                      value={weeklyTargetDraft}
+                      onBlur={restoreWeeklyTargetDraft}
+                      onChange={(event) => updateWeeklyTargetDraft(event.target.value)}
                     />
                     <small>本周想投递多少个岗位</small>
                   </label>
@@ -3910,7 +4156,7 @@ function App() {
                                   onClick={() =>
                                     requestConfirm({
                                       title: "删除这条动作？",
-                                      description: `「${task.title}」删除后不再出现在训练计划里。`,
+                                      description: `「${task.title}」删除后不再出现在本周计划里。`,
                                       confirmLabel: "删除",
                                       onConfirm: () => deleteWeeklyTask(task.id),
                                     })
@@ -4231,7 +4477,7 @@ function App() {
                     </div>
                     <label>
                       <span>主观优先级</span>
-                      <select value={composerDraft.priority} onChange={(event) => updateComposerDraft("priority", event.target.value)}>
+                      <select value={composerDraft.priority} onChange={(event) => updateComposerDraft("priority", event.target.value as OpportunityPriority)}>
                         <option value="A">A</option>
                         <option value="B">B</option>
                         <option value="C">C</option>
@@ -4239,15 +4485,54 @@ function App() {
                     </label>
                     <label>
                       <span>匹配度</span>
-                      <select value={composerDraft.match} onChange={(event) => updateComposerDraft("match", event.target.value)}>
+                      <select value={composerDraft.match} onChange={(event) => updateComposerDraft("match", event.target.value as OpportunityMatch)}>
                         <option value="HIGH">HIGH</option>
                         <option value="MEDIUM">MEDIUM</option>
                         <option value="LOW">LOW</option>
                       </select>
                     </label>
                     <label>
-                      <span>今日动作级别</span>
-                      <input readOnly value={computeOpportunityAction({ status: "TO APPLY", deadline: composerDraft.deadline, dueDate: composerDraft.dueDate, match: composerDraft.match, priority: composerDraft.priority })} />
+                      <span className="field-label-row">
+                        <span>今日优先级</span>
+                        <span
+                          className="field-tooltip"
+                          tabIndex={0}
+                          data-tooltip="默认会根据状态、截止日、匹配度和主观优先级自动计算；也可以手动选择 P0-P3。"
+                          aria-label="今日优先级说明"
+                        >
+                          ?
+                        </span>
+                      </span>
+                      <select
+                        value={composerDraft.actionManual ? composerDraft.action : "AUTO"}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          if (value === "AUTO") {
+                            updateComposerDraft("actionManual", false);
+                            updateComposerDraft(
+                              "action",
+                              computeOpportunityAction({
+                                status: "TO APPLY",
+                                deadline: composerDraft.deadline,
+                                dueDate: composerDraft.dueDate,
+                                match: composerDraft.match,
+                                priority: composerDraft.priority,
+                              }),
+                            );
+                            return;
+                          }
+                          updateComposerDraft("actionManual", true);
+                          updateComposerDraft("action", value as OpportunityAction);
+                        }}
+                      >
+                        <option value="AUTO">
+                          自动（建议 {computeOpportunityAction({ status: "TO APPLY", deadline: composerDraft.deadline, dueDate: composerDraft.dueDate, match: composerDraft.match, priority: composerDraft.priority })}）
+                        </option>
+                        <option value="P0">P0</option>
+                        <option value="P1">P1</option>
+                        <option value="P2">P2</option>
+                        <option value="P3">P3</option>
+                      </select>
                     </label>
                     <label>
                       <span>投递简历</span>
@@ -4257,7 +4542,7 @@ function App() {
                         ))}
                       </select>
                     </label>
-                    <label className="wide-field">
+                    <label>
                       <span>来源</span>
                       <input value={composerDraft.sourceLabel} onChange={(event) => updateComposerDraft("sourceLabel", event.target.value)} />
                     </label>
@@ -4295,12 +4580,12 @@ function App() {
                     </label>
                     <label className="wide-field">
                       <span>关联岗位</span>
-                      <select value={composerDraft.linkedOpportunityId} onChange={(event) => updateComposerDraft("linkedOpportunityId", event.target.value)}>
-                        <option value="">暂不关联</option>
-                        {opportunities.map((opportunity) => (
-                          <option value={opportunity.id} key={opportunity.id}>{opportunity.company} / {opportunity.title}</option>
-                        ))}
-                      </select>
+                      <OpportunityCombobox
+                        opportunities={opportunities}
+                        value={composerDraft.linkedOpportunityId}
+                        onChange={(value) => updateComposerDraft("linkedOpportunityId", value)}
+                        emptyLabel="暂不关联"
+                      />
                     </label>
                     <label className="wide-field">
                       <span>原文件名</span>
@@ -4495,10 +4780,10 @@ function App() {
                       setWeeklyTaskForm((form) => (form ? { ...form, level: event.target.value as WeeklyTask["level"] } : form))
                     }
                   >
-                    <option value="P0">今天必须做</option>
-                    <option value="P1">优先推进</option>
-                    <option value="P2">正常练习</option>
-                    <option value="P3">低优先</option>
+                    <option value="P0">P0</option>
+                    <option value="P1">P1</option>
+                    <option value="P2">P2</option>
+                    <option value="P3">P3</option>
                   </select>
                 </label>
               </div>
@@ -4550,15 +4835,36 @@ function App() {
   );
 }
 
-function PageIntro({ label, title, detail, action }: { label: string; title: string; detail: string; action: string }) {
+function PageIntro({
+  label,
+  title,
+  detail,
+  action,
+  helpTooltip = "",
+  helpLabel = "说明",
+}: {
+  label: string;
+  title: string;
+  detail: string;
+  action: string;
+  helpTooltip?: string;
+  helpLabel?: string;
+}) {
   return (
     <div className="page-intro">
       <div className="section-title">
         <span>{label}</span>
-        <h2>{title}</h2>
+        <h2>
+          {title}
+          {helpTooltip ? (
+            <span className="field-tooltip section-title-help" tabIndex={0} data-tooltip={helpTooltip} aria-label={helpLabel}>
+              ?
+            </span>
+          ) : null}
+        </h2>
         <em>{action}</em>
       </div>
-      <p>{detail}</p>
+      {detail ? <p>{detail}</p> : null}
     </div>
   );
 }

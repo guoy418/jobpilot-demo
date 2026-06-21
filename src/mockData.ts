@@ -69,7 +69,7 @@ const opportunityTrace: Record<string, Pick<Opportunity, "jdSummary" | "jdText" 
         id: "SRC-021-1",
         kind: "jd-text",
         title: "岗位 JD 文本",
-        detail: "从岗位管理内新增后生成正式记录",
+        detail: "从岗位推进内新增后生成正式记录",
         createdAt: "May 24 22:11",
         content: "岗位职责：参与低代码平台前端模块开发，负责业务组件沉淀、页面性能优化和跨端体验改进。岗位要求：熟悉 React、TypeScript、组件化开发，有性能优化或工程化经验优先。",
       },
@@ -85,7 +85,7 @@ const opportunityTrace: Record<string, Pick<Opportunity, "jdSummary" | "jdText" 
     timeline: [
       { id: "TL-021-1", occurredAt: "May 24 22:11", title: "导入 JD 文本", detail: "分类为岗位 JD，备注：字节低代码前端实习", status: "done" },
       { id: "TL-021-2", occurredAt: "May 24 22:13", title: "生成岗位草稿", detail: "系统提取公司、岗位、城市、技能关键词和截止时间", status: "done" },
-      { id: "TL-021-3", occurredAt: "May 24 22:15", title: "确认进入岗位管理", detail: "用户确认优先级 A，匹配度 HIGH，使用 FE Intern v7", status: "done" },
+      { id: "TL-021-3", occurredAt: "May 24 22:15", title: "确认进入岗位推进", detail: "用户确认优先级 A，匹配度 HIGH，使用 FE Intern v7", status: "done" },
       { id: "TL-021-4", occurredAt: "Next", title: "补充项目指标后投递", detail: "待补齐低代码项目的性能指标，再执行投递", status: "next" },
     ],
   },
@@ -124,10 +124,10 @@ const opportunityTrace: Record<string, Pick<Opportunity, "jdSummary" | "jdText" 
     timeline: [
       { id: "TL-019-1", occurredAt: "May 21 20:14", title: "导入招聘链接", detail: "分类为招聘链接，备注：美团数据分析实习", status: "done" },
       { id: "TL-019-2", occurredAt: "May 21 20:16", title: "生成岗位草稿", detail: "系统解析 JD，并保留原链接和 JD 原文", status: "done" },
-      { id: "TL-019-3", occurredAt: "May 21 20:18", title: "确认进入岗位管理", detail: "确认城市北京、优先级 B、匹配度 HIGH", status: "done" },
+      { id: "TL-019-3", occurredAt: "May 21 20:18", title: "确认进入岗位推进", detail: "确认城市北京、优先级 B、匹配度 HIGH", status: "done" },
       { id: "TL-019-4", occurredAt: "May 21 20:22", title: "选择简历版本", detail: "本次投递使用 Data v2，突出 SQL、Python 和指标体系", status: "done" },
       { id: "TL-019-5", occurredAt: "May 21 20:35", title: "完成投递", detail: "通过官网投递并同步给内推人", status: "done" },
-      { id: "TL-019-6", occurredAt: "May 24 09:00", title: "生成跟进动作", detail: "三天后跟进内推人，已进入今日待办", status: "done" },
+      { id: "TL-019-6", occurredAt: "May 24 09:00", title: "生成跟进动作", detail: "三天后跟进内推人，已进入今日行动", status: "done" },
     ],
   },
   "OP-018": {
@@ -166,6 +166,7 @@ const baseInterviewSessions: InterviewSession[] = [
     role: "前端开发实习生",
     round: "一面",
     date: "May 24",
+    reviewPriority: "P1",
     qaPairs: [
       {
         id: "QA-101",
@@ -211,6 +212,7 @@ const baseInterviewSessions: InterviewSession[] = [
     role: "增长产品实习生",
     round: "业务面",
     date: "May 22",
+    reviewPriority: "P1",
     qaPairs: [
       {
         id: "QA-201",

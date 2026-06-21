@@ -23,6 +23,7 @@ export type OpportunityDraft = {
   priority: OpportunityPriority | "";
   match: OpportunityMatch | "";
   action: OpportunityAction | "";
+  actionManual?: boolean;
   resumeId: string;
   nextAction: string;
   jdText: string;
@@ -128,6 +129,7 @@ export type InterviewSession = {
   role: string;
   round: string;
   date: string;
+  reviewPriority: OpportunityAction;
   sourceFiles?: SessionFile[];
   qaPairs: QaPair[];
 };
@@ -214,6 +216,7 @@ export type ModuleComposerDraft = {
   priority: OpportunityPriority;
   match: OpportunityMatch;
   action: OpportunityAction;
+  actionManual?: boolean;
   resumeId: string;
   nextAction: string;
   sourceLabel: string;
