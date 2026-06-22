@@ -53,6 +53,19 @@ export const opportunityStatusNextAction: Record<OpportunityStatus, string> = {
   ENDED: "已结束，保留历史记录",
 };
 
+export const defaultOpportunityNextAction = (status: OpportunityStatus) => opportunityStatusNextAction[status] || opportunityStatusNextAction["TO APPLY"];
+
+export const getRestorableOpportunityStatus = (
+  opportunity: { previousStatus?: OpportunityStatus | null; status: OpportunityStatus },
+  hasLinkedInterviews = false,
+): Exclude<OpportunityStatus, "ENDED"> => {
+  if (opportunity.previousStatus && opportunity.previousStatus !== "ENDED") return opportunity.previousStatus;
+  if (opportunity.status !== "ENDED") return opportunity.status;
+  return hasLinkedInterviews ? "WAITING" : "APPLIED";
+};
+
+export const shouldAdvanceLinkedOpportunityAfterInterview = (status: OpportunityStatus) => status === "INTERVIEWING";
+
 const dayMs = 24 * 60 * 60 * 1000;
 const priorityRank: Record<OpportunityAction, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 const rankPriority = ["P0", "P1", "P2", "P3"] as const;

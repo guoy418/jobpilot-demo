@@ -34,14 +34,17 @@ import { type CSSProperties, type DragEvent, type MouseEvent, useEffect, useMemo
 import { isGarbledTextContent, readTextFile } from "./textEncoding";
 import {
   computeOpportunityAction,
+  defaultOpportunityNextAction,
   resolveOpportunityAction,
   formatNow,
+  getRestorableOpportunityStatus,
   getOpportunityDueDate,
   inferDueDateFromText,
   isOpportunityDueSoon,
   makeId,
   opportunityStatusFlow,
   opportunityStatusNextAction,
+  shouldAdvanceLinkedOpportunityAfterInterview,
   sourceKindLabel,
   statusLabel,
   submittedStatuses,
@@ -517,6 +520,26 @@ const canRunSourceParse = (source: ModuleComposerSource) => {
   return Boolean(isApiEnabled && source.storageUri);
 };
 
+const timelineWithSyncedNextEvent = (
+  timeline: TimelineEvent[],
+  status: OpportunityStatus,
+  nextAction: string,
+  detail = "由当前岗位进度生成下一步动作",
+): TimelineEvent[] => [
+  ...timeline.filter((event) => event.status !== "next"),
+  ...(status !== "OFFER" && status !== "ENDED"
+    ? [
+        {
+          id: makeId("TL"),
+          occurredAt: "Next",
+          title: nextAction,
+          detail,
+          status: "next" as const,
+        },
+      ]
+    : []),
+];
+
 const normalizeParsedQaPairs = (items: unknown): Array<Omit<QaPair, "id">> => {
   if (!Array.isArray(items)) return [];
   return items
@@ -716,6 +739,8 @@ function OpportunityCombobox({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useMemo(() => `opportunity-combobox-listbox-${makeId("CB")}`, []);
   const selectedOpportunity = opportunities.find((opportunity) => opportunity.id === value);
   const filteredOpportunities = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -732,17 +757,45 @@ function OpportunityCombobox({
     setSearch("");
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const closeFromOutside = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Node && rootRef.current && !rootRef.current.contains(target)) {
+        setOpen(false);
+        setSearch("");
+      }
+    };
+    document.addEventListener("mousedown", closeFromOutside);
+    return () => document.removeEventListener("mousedown", closeFromOutside);
+  }, [open]);
+
   return (
-    <div className="opportunity-combobox">
-      <button type="button" className="opportunity-combobox-trigger" onClick={() => setOpen((visible) => !visible)} aria-expanded={open}>
+    <div className="opportunity-combobox" ref={rootRef}>
+      <button
+        type="button"
+        className="opportunity-combobox-trigger"
+        onClick={() => setOpen((visible) => !visible)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setOpen(false);
+            setSearch("");
+          }
+        }}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-controls={open ? listboxId : undefined}
+        aria-label={selectedOpportunity ? `当前关联岗位：${selectedOpportunity.company} / ${selectedOpportunity.title}` : emptyLabel}
+      >
         <span>{selectedOpportunity ? `${selectedOpportunity.company} / ${selectedOpportunity.title}` : emptyLabel}</span>
         <ChevronDown size={16} />
       </button>
       {open ? (
-        <div className="opportunity-combobox-menu">
+        <div className="opportunity-combobox-menu" id={listboxId} role="listbox" aria-label="选择关联岗位">
           <input
             autoFocus
             value={search}
+            aria-label="搜索关联岗位"
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
@@ -752,12 +805,21 @@ function OpportunityCombobox({
             }}
             placeholder={searchPlaceholder}
           />
-          <button type="button" className={!value ? "selected-option" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseOpportunity("")}>
+          <button
+            type="button"
+            role="option"
+            aria-selected={!value}
+            className={!value ? "selected-option" : ""}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => chooseOpportunity("")}
+          >
             {emptyLabel}
           </button>
           {filteredOpportunities.map((opportunity) => (
             <button
               type="button"
+              role="option"
+              aria-selected={opportunity.id === value}
               className={opportunity.id === value ? "selected-option" : ""}
               key={opportunity.id}
               onMouseDown={(event) => event.preventDefault()}
@@ -1112,6 +1174,15 @@ function App() {
     setOpportunityPage(0);
   };
 
+  const clearOpportunitySearchAndFilters = () => {
+    setQuery("");
+    setOpportunityVisibility("ACTIVE");
+    setOpportunityPriorityFilter("ALL");
+    setOpportunityTagFilters([]);
+    setOpportunityPage(0);
+    setSystemMessage("已清除岗位筛选");
+  };
+
   const selectOpportunityViewMode = (nextViewMode: ViewMode) => {
     if (nextViewMode === viewMode) return;
     setViewMode(nextViewMode);
@@ -1141,6 +1212,8 @@ function App() {
   const visibleTableOpportunities = opportunityList.visible;
   const opportunityPageCount = opportunityList.pageCount;
   const safeOpportunityPage = opportunityList.safePage;
+  const hasOpportunitySearchOrFilters =
+    normalizedQuery.length > 0 || opportunityVisibility !== "ACTIVE" || opportunityPriorityFilter !== "ALL" || opportunityTagFilters.length > 0;
 
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
@@ -1159,10 +1232,26 @@ function App() {
   const selectedOpportunityEnded = selectedOpportunity?.status === "ENDED";
   const selectedOpportunityEndReason = selectedOpportunity?.endedReason ? endReasonLabel[selectedOpportunity.endedReason] : "其他";
   const selectedOpportunityHeaderAction = selectedOpportunityEnded ? "已结束" : selectedOpportunityAction;
+  const visibleOpportunitySourceAssets = selectedOpportunity
+    ? selectedOpportunity.sourceAssets.filter((asset) => asset.kind === "job-link" || asset.kind === "screenshot" || Boolean(asset.storageUri))
+    : [];
+
+  const resetListNavigation = () => {
+    setInterviewPage(0);
+    setAnswerPage(0);
+    setOpportunityPage(0);
+    setWeeklyInterviewPage(0);
+    setWeeklyPracticePage(0);
+  };
 
   const goTo = (nextPage: Page) => {
     setPage(nextPage);
-    setSystemMessage(`[OPENED: ${nextPage.toUpperCase()}]`);
+    if (nextPage !== page) {
+      setQuery("");
+      resetListNavigation();
+    }
+    const label = navItems.find((item) => item.id === nextPage)?.label ?? "页面";
+    setSystemMessage(`已打开${label}`);
   };
 
   const openComposer = (kind: ModuleComposer, linkedOpportunityId = "") => {
@@ -1174,7 +1263,15 @@ function App() {
     setComposerParseNotice("");
     setComposerParsing(false);
     setComposerDraft(createModuleComposerDraft(resumeList[0]?.id ?? "", linkedOpportunityId));
-    setSystemMessage(`[NEW ${kind.toUpperCase()}]`);
+    setSystemMessage(
+      kind === "opportunity"
+        ? "开始新增岗位"
+        : kind === "interview"
+          ? "开始新增面试复盘"
+          : kind === "resume"
+            ? "开始上传简历"
+            : "开始新增答案卡",
+    );
   };
 
   const updateAiSettings = (patch: Partial<AiSettings>) => {
@@ -1258,8 +1355,11 @@ function App() {
   const runComposerParse = async () => {
     if (!composer || composerParsing) return;
     const rawText = composerSource.rawText.trim();
+    const sourceInputText = composer === "opportunity" && composerSource.sourceKind === "job-link"
+      ? `${composerSource.note.trim()} ${rawText}`.trim()
+      : rawText;
     const fileName = composerSource.fileName.trim();
-    if (composer !== "answer" && !rawText && !fileName) {
+    if (composer !== "answer" && !sourceInputText && !fileName) {
       setComposerParseNotice(
         composer === "interview" && interviewInputMode === "review-json"
           ? "请粘贴或上传已经整理好的复盘文档。"
@@ -1268,14 +1368,14 @@ function App() {
       setSystemMessage("请先选择材料");
       return;
     }
-    if (composer !== "answer" && fileName && !rawText && isApiEnabled && !composerSource.storageUri) {
+    if (composer !== "answer" && fileName && !sourceInputText && isApiEnabled && !composerSource.storageUri) {
       setComposerParseNotice("文件还在保存，请稍等几秒后再继续。");
       setSystemMessage("请稍等文件保存");
       return;
     }
 
     const assistRequirement = composer !== "answer" ? composerAssistRequirement(composer, composerSource.sourceKind, aiSettings) : "";
-    if (assistRequirement && !rawText) {
+    if (assistRequirement && !sourceInputText) {
       setComposerSource((source) => ({
         ...source,
         extractionStatus: composerSource.sourceKind === "audio" ? "transcription-unavailable" : "ocr-unavailable",
@@ -1285,7 +1385,7 @@ function App() {
       return;
     }
 
-    const parseText = `${rawText} ${fileBaseName(fileName)}`.trim();
+    const parseText = `${sourceInputText} ${fileBaseName(fileName)}`.trim();
     const defaultResumeId = composerDraft.resumeId || resumeList[0]?.id || "";
     const linkedOpportunity = opportunities.find((item) => item.id === composerDraft.linkedOpportunityId);
 
@@ -1403,7 +1503,7 @@ function App() {
     const blockParseWithNotice = (status: string, notice: string) => {
       setComposerSource((source) => ({ ...source, extractionStatus: status }));
       setComposerParseNotice(notice);
-      setSystemMessage(`[PARSE BLOCKED: ${status}]`);
+      setSystemMessage("材料暂时无法整理");
     };
 
     if (composer === "interview" && interviewInputMode === "raw-transcript" && rawText && isGarbledTextContent(rawText)) {
@@ -1422,7 +1522,7 @@ function App() {
         setComposerParseNotice("正在整理内容，请稍候...");
         setSystemMessage("正在整理内容");
         const payload = {
-          rawText,
+          rawText: sourceInputText,
           fileName,
           sourceKind: composerSource.sourceKind,
           note: composerSource.note,
@@ -1627,7 +1727,14 @@ function App() {
   };
 
   const updateSelectedOpportunity = (patch: Partial<Opportunity>) => {
-    const normalizedPatch = patch;
+    const normalizedPatch: Partial<Opportunity> = { ...patch };
+    const statusChanged = Boolean(normalizedPatch.status && normalizedPatch.status !== selectedOpportunity.status);
+    if (statusChanged && normalizedPatch.status && !("nextAction" in normalizedPatch)) {
+      normalizedPatch.nextAction = defaultOpportunityNextAction(normalizedPatch.status);
+    }
+    if (statusChanged && normalizedPatch.status && !("timeline" in normalizedPatch)) {
+      normalizedPatch.timeline = timelineWithSyncedNextEvent(selectedOpportunity.timeline, normalizedPatch.status, normalizedPatch.nextAction ?? selectedOpportunity.nextAction);
+    }
     const nextOpportunity = { ...selectedOpportunity, ...normalizedPatch };
     const shouldRecomputeAction =
       !nextOpportunity.actionManual &&
@@ -1693,7 +1800,7 @@ function App() {
             [extractionStatusLabel(parsed.extractionStatus), parsed.aiError || parsed.extractionError].filter(Boolean).join("：") ||
               "重新整理失败，请检查文字稿或智能整理设置。",
           );
-          setSystemMessage(`[REPARSE BLOCKED: ${parsed.extractionStatus ?? "failed"}]`);
+          setSystemMessage("面试重新整理失败");
           return;
         }
         nextPairs = normalizeParsedQaPairs(parsed.qaPairs);
@@ -1770,17 +1877,28 @@ function App() {
   };
 
   useEffect(() => {
-    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm) return;
+    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm && !composer) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmDialog) setConfirmDialog(null);
+      else if (composer) setComposer(null);
       else if (weeklyTaskForm) setWeeklyTaskForm(null);
       else if (previewAsset) setPreviewAsset(null);
       else if (previewSessionFile) setPreviewSessionFile(null);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmDialog, previewAsset, previewSessionFile, weeklyTaskForm]);
+  }, [composer, confirmDialog, previewAsset, previewSessionFile, weeklyTaskForm]);
+
+  const modalOpen = Boolean(confirmDialog || previewAsset || previewSessionFile || weeklyTaskForm || composer);
+  useEffect(() => {
+    if (!modalOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [modalOpen]);
 
   const syncCreatedAnswerCard = (card: AnswerCard) => {
     void createAnswerCardApi(card)
@@ -2347,6 +2465,7 @@ function App() {
         `- 日期：${session.date}`,
         `- 复盘优先级：${session.reviewPriority ?? "P1"}`,
         `- 关联岗位：${session.opportunityId ?? "未关联"}`,
+        `- 备注：${session.note || "无"}`,
         `- 原始材料：${session.sourceFiles?.map((file) => file.fileName).join("、") || "无"}`,
         "",
         ...session.qaPairs.flatMap((pair, pairIndex) => [
@@ -2535,8 +2654,31 @@ function App() {
       priority: composerDraft.priority,
     });
     const action = composerDraft.actionManual && composerDraft.action ? composerDraft.action : suggestedAction;
-    const sourceKind: SourceAsset["kind"] =
-      composerSource.sourceKind === "screenshot" ? "screenshot" : composerSource.sourceKind === "job-link" ? "job-link" : "jd-text";
+    const recruitmentLink = composerSource.note.trim();
+    const shouldKeepMaterialAsset = composerSource.sourceKind === "screenshot" || Boolean(composerSource.storageUri);
+    const materialAssetKind: SourceAsset["kind"] = composerSource.sourceKind === "screenshot" ? "screenshot" : "jd-text";
+    const sourceAssets: SourceAsset[] = [];
+    if (recruitmentLink) {
+      sourceAssets.push({
+        id: makeId("SRC"),
+        kind: "job-link",
+        title: "招聘链接",
+        detail: "来自招聘页面",
+        createdAt: now,
+        content: recruitmentLink,
+      });
+    }
+    if (shouldKeepMaterialAsset) {
+      sourceAssets.push({
+        id: makeId("SRC"),
+        kind: materialAssetKind,
+        title: composerSource.fileName || composerDraft.sourceLabel || (materialAssetKind === "screenshot" ? "岗位截图" : "上传材料"),
+        detail: materialAssetKind === "screenshot" ? "截图材料已保存" : "上传材料已保存",
+        createdAt: now,
+        content: composerDraft.sourceText.trim(),
+        storageUri: composerSource.storageUri,
+      });
+    }
     const nextOpportunity: Opportunity = {
       id: makeId("OP"),
       title: composerDraft.title.trim(),
@@ -2553,17 +2695,7 @@ function App() {
       nextAction: composerDraft.nextAction.trim() || "补齐材料后投递",
       jdSummary: composerSource.note || "从上传材料整理出的岗位记录。",
       jdText: composerDraft.sourceText.trim(),
-      sourceAssets: [
-        {
-          id: makeId("SRC"),
-          kind: sourceKind,
-          title: composerSource.fileName || composerDraft.sourceLabel || "岗位描述",
-          detail: composerSource.note || "从上传材料整理",
-          createdAt: now,
-          content: composerDraft.sourceText.trim(),
-          storageUri: composerSource.storageUri,
-        },
-      ],
+      sourceAssets,
       timeline: [
         { id: makeId("TL"), occurredAt: now, title: "写入岗位推进", detail: "必填信息满足后直接生成正式岗位记录", status: "done" },
         { id: makeId("TL"), occurredAt: "Next", title: composerDraft.nextAction.trim() || "补齐材料后投递", detail: "当前进度的备注", status: "next" },
@@ -2647,7 +2779,8 @@ function App() {
       role: composerDraft.role.trim(),
       round: composerDraft.round.trim(),
       date: composerDraft.date.trim() || "Today",
-      reviewPriority: "P1",
+      note: composerDraft.nextAction.trim(),
+      reviewPriority: composerDraft.reviewPriority,
       sourceFiles,
       qaPairs,
     };
@@ -2656,8 +2789,13 @@ function App() {
     setSelectedInterviewId(nextSession.id);
     setSelectedQaId(nextSession.qaPairs[0]?.id ?? "");
     syncCreatedInterviewSession(nextSession);
-    if (nextSession.opportunityId && (!isApiEnabled || !apiOpportunityIdsRef.current.has(nextSession.opportunityId))) {
-      applyOpportunityProgress(nextSession.opportunityId, "WAITING", "system", "新增" + nextSession.round + "面试复盘后自动推进");
+    const linkedOpportunity = nextSession.opportunityId ? opportunities.find((item) => item.id === nextSession.opportunityId) : undefined;
+    if (
+      linkedOpportunity &&
+      shouldAdvanceLinkedOpportunityAfterInterview(linkedOpportunity.status) &&
+      (!isApiEnabled || !apiOpportunityIdsRef.current.has(linkedOpportunity.id))
+    ) {
+      applyOpportunityProgress(linkedOpportunity.id, "WAITING", "system", "新增" + nextSession.round + "面试复盘后自动推进");
     }
     setComposer(null);
     setInterviewView("session");
@@ -2874,12 +3012,10 @@ function App() {
 
   const restoreSelectedOpportunity = () => {
     if (!selectedOpportunity || selectedOpportunity.status !== "ENDED") return;
-    const restoredStatus: Exclude<OpportunityStatus, "ENDED"> =
-      selectedOpportunity.previousStatus
-        ? selectedOpportunity.previousStatus
-        : interviewSessions.some((session) => session.opportunityId === selectedOpportunity.id)
-          ? "WAITING"
-          : "APPLIED";
+    const restoredStatus = getRestorableOpportunityStatus(
+      selectedOpportunity,
+      interviewSessions.some((session) => session.opportunityId === selectedOpportunity.id),
+    );
     const restoredAt = todayDateKey();
     const nextAction = opportunityStatusNextAction[restoredStatus];
     const nextTimeline: TimelineEvent[] = [
@@ -3077,8 +3213,15 @@ function App() {
     const Icon = item.icon;
     const active = isNavItemActive(item.id);
     return (
-      <button key={item.id} className={`nav-item ${className} ${active ? "active" : ""}`} onClick={() => goTo(item.id)}>
-        <Icon size={18} />
+      <button
+        key={item.id}
+        type="button"
+        className={`nav-item ${className} ${active ? "active" : ""}`}
+        onClick={() => goTo(item.id)}
+        aria-current={active ? "page" : undefined}
+        aria-label={item.label}
+      >
+        <Icon size={18} aria-hidden="true" />
         <span className="nav-label">{item.label}</span>
       </button>
     );
@@ -3206,6 +3349,7 @@ function App() {
           </button>
           <button
             className="answer-category-main"
+            aria-current={active ? "true" : undefined}
             onClick={() => {
               setSelectedAnswerCategoryId(category.id);
               setOpenAnswerCategoryMenuId("");
@@ -3284,11 +3428,12 @@ function App() {
               type="button"
               className={`nav-section-toggle ${libraryNavActive && !libraryNavOpen ? "active" : ""}`}
               aria-expanded={libraryNavOpen}
+              aria-label={libraryNavOpen ? "收起资料库导航" : "展开资料库导航"}
               onClick={() => setLibraryNavOpen((open) => !open)}
             >
-              {libraryNavOpen ? <FolderOpen size={18} /> : <Folder size={18} />}
+              {libraryNavOpen ? <FolderOpen size={18} aria-hidden="true" /> : <Folder size={18} aria-hidden="true" />}
               <span className="nav-label">资料库</span>
-              <ChevronDown size={14} />
+              <ChevronDown size={14} aria-hidden="true" />
             </button>
             {libraryNavOpen ? <div className="nav-subitems">{libraryNavItems.map((item) => renderNavButton(item, "nav-subitem"))}</div> : null}
           </div>
@@ -3300,10 +3445,16 @@ function App() {
           <div className="sidebar-footer-meta">
             <div className="system-readout">
               <span>LOCAL DATA</span>
-              <strong>{systemMessage}</strong>
+              <strong aria-live="polite">{systemMessage}</strong>
             </div>
-            <button className="icon-button" title="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            <button
+              className="icon-button"
+              type="button"
+              title="切换主题"
+              aria-label={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
             </button>
           </div>
         </div>
@@ -3316,6 +3467,7 @@ function App() {
               <Search size={16} />
               <input
                 value={query}
+                aria-label={topSearchPlaceholder(page)}
                 onChange={(event) => {
                   setQuery(event.target.value);
                   setInterviewPage(0);
@@ -3514,6 +3666,7 @@ function App() {
                         <button
                           key={item.value}
                           className={`opportunity-scope-tab ${opportunityVisibility === item.value ? "active-scope-tab" : ""}`}
+                          aria-current={opportunityVisibility === item.value ? "true" : undefined}
                           onClick={() => {
                             setOpportunityVisibility(item.value);
                             setOpportunityPage(0);
@@ -3525,6 +3678,7 @@ function App() {
                       <span className="opportunity-scope-divider" aria-hidden="true">·</span>
                       <button
                         className={`opportunity-ended-link ${opportunityVisibility === "ENDED" ? "active-ended-link" : ""}`}
+                        aria-current={opportunityVisibility === "ENDED" ? "true" : undefined}
                         onClick={() => {
                           setOpportunityVisibility(opportunityVisibility === "ENDED" ? "ACTIVE" : "ENDED");
                           setOpportunityPage(0);
@@ -3536,17 +3690,32 @@ function App() {
                   </div>
                   <div className="filter-bar opportunity-filter-bar" aria-label="岗位筛选">
                     {opportunityPriorityOptions.map((item) => (
-                      <button key={item.value} className={opportunityPriorityFilter === item.value ? "active-filter" : ""} onClick={() => selectOpportunityPriorityFilter(item.value)}>
+                      <button
+                        key={item.value}
+                        className={opportunityPriorityFilter === item.value ? "active-filter" : ""}
+                        aria-pressed={opportunityPriorityFilter === item.value}
+                        onClick={() => selectOpportunityPriorityFilter(item.value)}
+                      >
                         {item.label}
                       </button>
                     ))}
                     <span className="opportunity-filter-separator" aria-hidden="true">|</span>
                     {opportunityTagOptions.map((item) => (
-                      <button key={item.value} className={opportunityTagFilters.includes(item.value) ? "active-filter" : ""} onClick={() => toggleOpportunityTagFilter(item.value)}>
+                      <button
+                        key={item.value}
+                        className={opportunityTagFilters.includes(item.value) ? "active-filter" : ""}
+                        aria-pressed={opportunityTagFilters.includes(item.value)}
+                        onClick={() => toggleOpportunityTagFilter(item.value)}
+                      >
                         {item.label}
                       </button>
                     ))}
                   </div>
+                  {hasOpportunitySearchOrFilters ? (
+                    <button type="button" className="ghost-button compact-button opportunity-clear-filters" onClick={clearOpportunitySearchAndFilters}>
+                      {normalizedQuery ? "清除搜索和筛选" : "清除筛选"}
+                    </button>
+                  ) : null}
                 </div>
                 <div className="view-toggle">
                   <button className="primary-chip" type="button" onClick={() => openComposer("opportunity")}>
@@ -3591,30 +3760,44 @@ function App() {
                     <span>截止日期</span>
                     <span>下一步动作</span>
                   </div>
-                  {visibleTableOpportunities.map((item) => (
-                    <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
-                      <span>
-                        <strong>{item.title}</strong>
-                        <small>{item.company} / {item.city} / {getResumeName(item.resumeId)}</small>
-                      </span>
-                      <StatusPill status={item.status} />
-                      <span className="signal-stack">
-                        <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
-                        <small>{item.priority} / {item.match}</small>
-                      </span>
-                      <span className="mono">{getOpportunityDueDate(item)}</span>
-                      <span>{item.nextAction}</span>
-                    </button>
-                  ))}
+                  {filteredOpportunities.length === 0 ? (
+                    <EmptyState title="没有匹配的岗位" detail="清空搜索或切换范围、优先级、标签筛选后再看。" className="table-empty-state" />
+                  ) : (
+                    visibleTableOpportunities.map((item) => (
+                      <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
+                        <span>
+                          <strong>{item.title}</strong>
+                          <small>{item.company} / {item.city} / {getResumeName(item.resumeId)}</small>
+                        </span>
+                        <StatusPill status={item.status} />
+                        <span className="signal-stack">
+                          <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
+                          <small>{item.priority} / {item.match}</small>
+                        </span>
+                        <span className="mono">{getOpportunityDueDate(item)}</span>
+                        <span>{item.nextAction}</span>
+                      </button>
+                    ))
+                  )}
                 </div>
               ) : (
                 <div className="paginated-pane-content">
-                  <BoardView opportunities={filteredOpportunities} scope={opportunityVisibility} openOpportunity={openOpportunity} />
+                  {filteredOpportunities.length === 0 ? (
+                    <EmptyState title="看板里没有匹配岗位" detail="调整搜索、范围或标签筛选后会重新显示分组结果。" />
+                  ) : (
+                    <BoardView opportunities={filteredOpportunities} scope={opportunityVisibility} openOpportunity={openOpportunity} />
+                  )}
                 </div>
               )}
             </div>
             {viewMode === "table" && (
-              <ListPager alwaysShow className="paginated-pane-footer" page={safeOpportunityPage} pageCount={opportunityPageCount} onPageChange={setOpportunityPage} />
+              <ListPager
+                className="paginated-pane-footer"
+                label="岗位列表"
+                page={safeOpportunityPage}
+                pageCount={opportunityPageCount}
+                onPageChange={setOpportunityPage}
+              />
             )}
           </section>
         )}
@@ -3633,18 +3816,22 @@ function App() {
                 action={selectedOpportunityHeaderAction}
               />
               <div className="source-panel">
-                <SectionTitle label="材料" title="原始材料" action={`${selectedOpportunity.sourceAssets.length} 份`} />
+                <SectionTitle label="材料" title="原始材料" action={`${visibleOpportunitySourceAssets.length} 份`} />
                 <div className="source-list">
-                  {selectedOpportunity.sourceAssets.map((asset) => (
-                    <button className="source-item source-button" key={asset.id} onClick={() => setPreviewAsset(asset)}>
-                      <div>
-                        <span>{sourceKindLabel[asset.kind]}</span>
-                        <strong>{asset.title}</strong>
-                        <small>{asset.detail}</small>
-                      </div>
-                      <em>{asset.createdAt}</em>
-                    </button>
-                  ))}
+                  {visibleOpportunitySourceAssets.length === 0 ? (
+                    <p className="empty-list-note">暂无招聘链接或上传文件。</p>
+                  ) : (
+                    visibleOpportunitySourceAssets.map((asset) => (
+                      <button className="source-item source-button" key={asset.id} onClick={() => setPreviewAsset(asset)}>
+                        <div>
+                          <span>{sourceKindLabel[asset.kind]}</span>
+                          <strong>{asset.title}</strong>
+                          <small>{asset.detail}</small>
+                        </div>
+                        <em>{asset.createdAt}</em>
+                      </button>
+                    ))
+                  )}
                 </div>
                 <div className="jd-brief">
                   <span>岗位描述原文</span>
@@ -3876,7 +4063,9 @@ function App() {
 
                 <div className="paginated-pane-body">
                   <div className="interview-card-grid paginated-pane-content">
-                    {visibleInterviewSessions.map((session) => {
+                    {filteredInterviewSessions.length === 0 ? (
+                      <EmptyState title="没有匹配的面试" detail="清空搜索，或导入一场新的面试复盘。" className="filtered-empty-state" />
+                    ) : visibleInterviewSessions.map((session) => {
                       const weakCount = session.qaPairs.filter((pair) => pair.weak).length;
                       return (
                         <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
@@ -3897,7 +4086,13 @@ function App() {
                   </div>
                 </div>
 
-                <ListPager alwaysShow className="paginated-pane-footer" page={safeInterviewPage} pageCount={interviewPageCount} onPageChange={setInterviewPage} />
+                <ListPager
+                  className="paginated-pane-footer"
+                  label="面试复盘列表"
+                  page={safeInterviewPage}
+                  pageCount={interviewPageCount}
+                  onPageChange={setInterviewPage}
+                />
               </div>
             ) : (
               <div className="surface review-editor interview-detail-pane">
@@ -3952,6 +4147,14 @@ function App() {
                           value={selectedInterview.opportunityId ?? ""}
                           onChange={(value) => updateSelectedInterview({ opportunityId: value || undefined })}
                           emptyLabel="未关联岗位"
+                        />
+                      </label>
+                      <label className="wide-field">
+                        <span>备注</span>
+                        <textarea
+                          value={selectedInterview.note ?? ""}
+                          onChange={(event) => updateSelectedInterview({ note: event.target.value })}
+                          placeholder="记录这场面试的背景、特殊要求或后续关注点。"
                         />
                       </label>
                     </div>
@@ -4121,6 +4324,7 @@ function App() {
                     <span className="answer-category-toggle" />
                     <button
                       className="answer-category-main"
+                      aria-current={isAllAnswerCategorySelected ? "true" : undefined}
                       onClick={() => {
                         setSelectedAnswerCategoryId(allAnswerCategoryId);
                         setOpenAnswerCategoryMenuId("");
@@ -4237,7 +4441,13 @@ function App() {
                     )}
                   </div>
                 </div>
-                <ListPager alwaysShow className="paginated-pane-footer" page={safeAnswerPage} pageCount={answerPageCount} onPageChange={setAnswerPage} />
+                <ListPager
+                  className="paginated-pane-footer"
+                  label="答案卡列表"
+                  page={safeAnswerPage}
+                  pageCount={answerPageCount}
+                  onPageChange={setAnswerPage}
+                />
               </div>
             ) : (
               <div className="surface answer-editor answer-detail-pane">
@@ -4392,6 +4602,7 @@ function App() {
                     })}
                     <ListPager
                       alwaysShow={linkedResumeOpportunityList.pageCount > 1}
+                      label="简历关联岗位"
                       page={linkedResumeOpportunityList.safePage}
                       pageCount={linkedResumeOpportunityList.pageCount}
                       onPageChange={setResumeLinkedOpportunityPage}
@@ -4482,6 +4693,9 @@ function App() {
                               <span>新增一张自主训练卡片</span>
                             </button>
                           ) : null}
+                          {group.id === "practice" && group.tasks.length === 0 ? (
+                            <p className="empty-list-note weekly-empty-note">还没有自主训练动作，可以先添加笔试、作品集或项目表达练习。</p>
+                          ) : null}
                           {visibleTasks.map((task) => (
                             <article className={`weekly-task ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
                               <div className="weekly-task-header">
@@ -4515,8 +4729,8 @@ function App() {
                           ))}
                         </div>
                         <ListPager
-                          alwaysShow
                           className="weekly-section-pager"
+                          label={`${group.title}任务`}
                           page={taskList.safePage}
                           pageCount={taskList.pageCount}
                           onPageChange={setPage}
@@ -4619,6 +4833,7 @@ function App() {
             className="asset-preview"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="composer-dialog-title"
             onMouseDown={markModalBackdropPointerStart}
             onClick={(event) => closeModalFromBackdropClick(event, () => setComposer(null))}
           >
@@ -4627,6 +4842,7 @@ function App() {
                 <X size={16} />
               </button>
               <SectionTitle
+                titleId="composer-dialog-title"
                 label={composerStep === "source" ? "步骤 1 / 2" : "步骤 2 / 2"}
                 title={
                   composer === "opportunity"
@@ -4643,8 +4859,12 @@ function App() {
                 {composerStep === "source"
                   ? composer === "interview"
                     ? "选择你现在手里的材料：已经整理好的复盘文档可以直接导入；只有原始转写稿时，可以让系统帮你整理。"
-                    : "上传文件，或直接粘贴文字内容。系统会尽量帮你提取关键信息。"
-                  : "请检查整理结果，补齐必要信息后保存。"}
+                    : composer === "opportunity"
+                      ? "上传 JD 文件，粘贴招聘链接，或直接粘贴文字至岗位描述。"
+                      : "上传文件，或直接粘贴文字内容。系统会尽量帮你提取关键信息。"
+                  : composer === "opportunity"
+                    ? "确认公司、岗位和下一步动作，可补充其他信息。"
+                    : "请检查整理结果，补齐必要信息后保存。"}
               </p>
 
               <div className="composer-steps">
@@ -4658,6 +4878,7 @@ function App() {
                     <div className="interview-import-mode wide-field">
                       <button
                         className={interviewInputMode === "review-json" ? "active-import-mode" : ""}
+                        aria-pressed={interviewInputMode === "review-json"}
                         onClick={() => {
                           setInterviewInputMode("review-json");
                           setComposerSource((source) => ({ ...source, sourceKind: "transcript", fileName: "", storageUri: undefined, extractionStatus: undefined }));
@@ -4669,6 +4890,7 @@ function App() {
                       </button>
                       <button
                         className={interviewInputMode === "raw-transcript" ? "active-import-mode" : ""}
+                        aria-pressed={interviewInputMode === "raw-transcript"}
                         onClick={() => {
                           setInterviewInputMode("raw-transcript");
                           setComposerSource((source) => ({ ...source, sourceKind: "transcript", extractionStatus: undefined }));
@@ -4691,12 +4913,12 @@ function App() {
                     </strong>
                     <small>
                       {composer === "opportunity"
-                        ? "支持岗位描述截图、PDF 或文本。"
+                        ? "支持截图、PDF、.txt、.md。"
                         : composer === "interview"
                           ? interviewInputMode === "review-json"
-                            ? "支持 .json / .txt / .md。内容需要是已整理好的复盘格式。"
-                            : "支持录音和文字稿。"
-                          : "支持 PDF / DOCX / 图片 / 文本。"}
+                            ? "支持 .json，或包含同样 JSON 结构的 .txt / .md。"
+                            : "支持录音、.txt、.md、.docx。"
+                          : "支持图片、PDF、.txt、.md、.docx。"}
                     </small>
                     <small>{uploadStatusLabel(composerSource)}</small>
                     {composerSource.extractionStatus && <small>{extractionStatusLabel(composerSource.extractionStatus)}</small>}
@@ -4715,47 +4937,52 @@ function App() {
                     />
                   </label>
 
-                  <div className="source-side">
-                    {!(composer === "interview" && interviewInputMode === "review-json") && (
-                    <label>
-                      <span>材料类型</span>
-                      <select value={composerSource.sourceKind} onChange={(event) => updateComposerSource("sourceKind", event.target.value)}>
-                        {composer === "opportunity" && (
-                          <>
-                            <option value="jd-text">岗位描述 / 文件</option>
-                            <option value="screenshot">岗位截图</option>
-                            <option value="job-link">招聘链接</option>
-                          </>
-                        )}
-                        {composer === "interview" && (
-                          <>
-                            <option value="audio">面试录音</option>
-                            <option value="transcript">文字稿</option>
-                          </>
-                        )}
-                        {composer === "resume" && <option value="resume-file">简历文件</option>}
-                      </select>
-                    </label>
-                    )}
-                    <label>
-                      <span>备注（可选）</span>
-                      <input
-                        value={composerSource.note}
-                        onChange={(event) => updateComposerSource("note", event.target.value)}
-                        placeholder={composer === "interview" ? "公司、岗位、轮次，或这次复盘重点" : "来源、轮次、重点方向等"}
-                      />
-                    </label>
-                  </div>
+                  {composer !== "interview" && (
+                    <div className="source-side">
+                      <label>
+                        <span>材料类型</span>
+                        <select value={composerSource.sourceKind} onChange={(event) => updateComposerSource("sourceKind", event.target.value)}>
+                          {composer === "opportunity" && (
+                            <>
+                              <option value="jd-text">岗位描述 / 文件</option>
+                              <option value="screenshot">岗位截图</option>
+                              <option value="job-link">招聘链接</option>
+                            </>
+                          )}
+                          {composer === "resume" && <option value="resume-file">简历文件</option>}
+                        </select>
+                      </label>
+                      {composer === "opportunity" && composerSource.sourceKind === "job-link" ? (
+                        <label>
+                          <span>招聘链接</span>
+                          <input
+                            value={composerSource.note}
+                            onChange={(event) => updateComposerSource("note", event.target.value)}
+                            placeholder="https://jobs.example.com/..."
+                          />
+                        </label>
+                      ) : (
+                        <label>
+                          <span>{composer === "opportunity" ? "招聘链接" : "备注说明"}</span>
+                          <input
+                            value={composerSource.note}
+                            onChange={(event) => updateComposerSource("note", event.target.value)}
+                            placeholder="https://jobs.example.com/..."
+                          />
+                        </label>
+                      )}
+                    </div>
+                  )}
 
                   <label className="wide-field source-text-input">
                     <span>
                       {composer === "opportunity"
-                        ? "岗位描述（可选）"
+                        ? "岗位描述"
                         : composer === "interview"
                           ? interviewInputMode === "review-json"
                             ? "整理好的复盘内容"
                             : "原始录音转写稿"
-                          : "简历文字或补充说明（可选）"}
+                          : "简历文字或补充说明"}
                     </span>
                     <textarea
                       value={composerSource.rawText}
@@ -4924,13 +5151,34 @@ function App() {
                       <span>日期</span>
                       <input value={composerDraft.date} onChange={(event) => updateComposerDraft("date", event.target.value)} />
                     </label>
-                    <label className="wide-field">
+                    <label>
                       <span>关联岗位</span>
                       <OpportunityCombobox
                         opportunities={opportunities}
                         value={composerDraft.linkedOpportunityId}
                         onChange={(value) => updateComposerDraft("linkedOpportunityId", value)}
                         emptyLabel="暂不关联"
+                      />
+                    </label>
+                    <label>
+                      <span>复盘优先级</span>
+                      <select
+                        value={composerDraft.reviewPriority}
+                        onChange={(event) => updateComposerDraft("reviewPriority", event.target.value as OpportunityAction)}
+                      >
+                        {reviewPriorityOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="wide-field">
+                      <span>备注</span>
+                      <textarea
+                        value={composerDraft.nextAction}
+                        onChange={(event) => updateComposerDraft("nextAction", event.target.value)}
+                        placeholder="记录这场面试的背景、特殊要求或后续关注点。"
                       />
                     </label>
                     <label className="wide-field">
@@ -5033,6 +5281,7 @@ function App() {
             className="asset-preview"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="asset-preview-title"
             onMouseDown={markModalBackdropPointerStart}
             onClick={(event) => closeModalFromBackdropClick(event, () => setPreviewAsset(null))}
           >
@@ -5040,7 +5289,7 @@ function App() {
               <button className="modal-close-button" onClick={() => setPreviewAsset(null)} aria-label="关闭">
                 <X size={16} />
               </button>
-              <SectionTitle label={sourceKindLabel[previewAsset.kind]} title={previewAsset.title} action={previewAsset.createdAt} />
+              <SectionTitle titleId="asset-preview-title" label={sourceKindLabel[previewAsset.kind]} title={previewAsset.title} action={previewAsset.createdAt} />
               <p>{previewAsset.detail}</p>
               <textarea readOnly value={previewAsset.content || "当前原材料只有元信息。若该材料来自文件上传，可以点击下方打开原文件。"} />
               <div className="button-row">
@@ -5060,6 +5309,7 @@ function App() {
             className="asset-preview"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="session-file-preview-title"
             onMouseDown={markModalBackdropPointerStart}
             onClick={(event) => closeModalFromBackdropClick(event, () => setPreviewSessionFile(null))}
           >
@@ -5068,6 +5318,7 @@ function App() {
                 <X size={16} />
               </button>
               <SectionTitle
+                titleId="session-file-preview-title"
                 label={previewSessionFile.kind === "audio" ? "原录音" : "文字稿"}
                 title={previewSessionFile.fileName}
                 action={previewSessionFile.uploadedAt}
@@ -5088,6 +5339,7 @@ function App() {
             className="asset-preview weekly-task-dialog"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="weekly-task-dialog-title"
             onMouseDown={markModalBackdropPointerStart}
             onClick={(event) => closeModalFromBackdropClick(event, () => setWeeklyTaskForm(null))}
           >
@@ -5097,7 +5349,7 @@ function App() {
               </button>
               <div className="section-title">
                 <span>自主训练</span>
-                <h2>添加练习动作</h2>
+                <h2 id="weekly-task-dialog-title">添加练习动作</h2>
               </div>
               <p>手动写下这周的练习任务，例如笔试、作品集或项目表达。</p>
               <div className="draft-edit-grid weekly-task-form-grid">
@@ -5150,6 +5402,7 @@ function App() {
             className="asset-preview confirm-dialog"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="confirm-dialog-title"
             onMouseDown={markModalBackdropPointerStart}
             onClick={(event) => closeModalFromBackdropClick(event, () => setConfirmDialog(null))}
           >
@@ -5159,7 +5412,7 @@ function App() {
               </button>
               <div className="section-title">
                 <span>{confirmDialog.eyebrow ?? "确认删除"}</span>
-                <h2>{confirmDialog.title}</h2>
+                <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
               </div>
               <p>{confirmDialog.description}</p>
               {confirmDialog.contentKind === "end-opportunity" ? (
@@ -5171,6 +5424,7 @@ function App() {
                         type="button"
                         key={option.value}
                         className={endOpportunityDraft.reason === option.value ? "active-filter" : ""}
+                        aria-pressed={endOpportunityDraft.reason === option.value}
                         onClick={() => updateEndOpportunityDraft({ reason: option.value })}
                       >
                         {option.label}
@@ -5178,7 +5432,7 @@ function App() {
                     ))}
                   </div>
                   <label>
-                    <span>备注（可选）</span>
+                    <span>备注</span>
                     <textarea
                       value={endOpportunityDraft.note}
                       onChange={(event) => updateEndOpportunityDraft({ note: event.target.value })}
@@ -5243,11 +5497,11 @@ function PageIntro({
   );
 }
 
-function SectionTitle({ label, title, action }: { label: string; title: string; action: string }) {
+function SectionTitle({ label, title, action, titleId }: { label: string; title: string; action: string; titleId?: string }) {
   return (
     <div className="section-title">
       <span>{label}</span>
-      <h2>{title}</h2>
+      <h2 id={titleId}>{title}</h2>
       <em>{action}</em>
     </div>
   );
@@ -5364,26 +5618,36 @@ function ListPager({
   onPageChange,
   alwaysShow = false,
   className = "",
+  label = "列表",
 }: {
   page: number;
   pageCount: number;
   onPageChange: (nextPage: number) => void;
   alwaysShow?: boolean;
   className?: string;
+  label?: string;
 }) {
   if (!alwaysShow && pageCount <= 1) return null;
 
   return (
-    <div className={`pager-row ${className}`.trim()}>
-      <button className="ghost-button compact-button" disabled={page === 0} onClick={() => onPageChange(Math.max(0, page - 1))}>
+    <div className={`pager-row ${className}`.trim()} aria-label={`${label}分页`}>
+      <button
+        type="button"
+        className="ghost-button compact-button"
+        disabled={page === 0}
+        aria-label={`${label}上一页`}
+        onClick={() => onPageChange(Math.max(0, page - 1))}
+      >
         上一页
       </button>
       <span>
         {page + 1} / {pageCount}
       </span>
       <button
+        type="button"
         className="ghost-button compact-button"
         disabled={page >= pageCount - 1}
+        aria-label={`${label}下一页`}
         onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
       >
         下一页
@@ -5408,9 +5672,9 @@ function SegmentedProgress({ value, segments }: { value: number; segments: numbe
   );
 }
 
-function EmptyState({ title, detail }: { title: string; detail: string }) {
+function EmptyState({ title, detail, className = "" }: { title: string; detail: string; className?: string }) {
   return (
-    <div className="empty-state">
+    <div className={`empty-state ${className}`.trim()}>
       <h3>{title}</h3>
       <p>{detail}</p>
     </div>

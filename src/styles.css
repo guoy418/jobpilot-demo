@@ -454,6 +454,11 @@ button:focus-visible {
   min-height: 64px;
 }
 
+.search-box:focus-within {
+  border-color: color-mix(in srgb, var(--interactive) 44%, var(--border-visible));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--button-focus-ring) 24%, transparent);
+}
+
 .api-mode-badge {
   min-height: 64px;
   display: grid;
@@ -2252,6 +2257,10 @@ small {
   user-select: none;
 }
 
+.opportunity-clear-filters {
+  justify-self: start;
+}
+
 .view-toggle {
   display: flex;
   align-items: center;
@@ -3197,6 +3206,25 @@ small {
   padding: 16px 12px;
   color: var(--text-secondary);
   font-size: 14px;
+}
+
+.table-empty-state {
+  min-height: 280px;
+  padding: 36px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.filtered-empty-state {
+  grid-column: 1 / -1;
+  min-height: 280px;
+  padding: 36px 16px;
+}
+
+.weekly-empty-note {
+  align-self: stretch;
+  min-height: 164px;
+  display: grid;
+  align-content: center;
 }
 
 .answer-card {

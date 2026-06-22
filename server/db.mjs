@@ -31,11 +31,11 @@ const opportunityStatusLabel = {
 const opportunityStatusNextAction = {
   "TO APPLY": "补齐材料后投递",
   APPLIED: "三天后跟进投递结果",
-  "WRITTEN TEST": "完成笔试并记录结果",
+  "WRITTEN TEST": "完成笔试并同步结果",
   SCREENING: "等待筛选结果",
   INTERVIEWING: "准备下一轮面试",
-  WAITING: "等待反馈并定期跟进",
-  OFFER: "整理 offer 对比和入职材料",
+  WAITING: "等待结果并准备复盘",
+  OFFER: "整理 Offer 信息和取舍",
   ENDED: "已结束，保留历史记录",
 };
 
@@ -183,6 +183,16 @@ const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match =
   return actionByRank[Math.max(0, Math.min(3, rank))];
 };
 
+const defaultOpportunityNextAction = (status) => opportunityStatusNextAction[status] || opportunityStatusNextAction["TO APPLY"];
+
+const getRestorableOpportunityStatus = (opportunity, hasLinkedInterviews = false) => {
+  if (opportunity.previousStatus && opportunity.previousStatus !== "ENDED") return opportunity.previousStatus;
+  if (opportunity.status !== "ENDED") return opportunity.status;
+  return hasLinkedInterviews ? "WAITING" : "APPLIED";
+};
+
+const shouldAdvanceLinkedOpportunityAfterInterview = (status) => status === "INTERVIEWING";
+
 const resolveOpportunityAction = (opportunity) => {
   if (opportunity.status === "ENDED") return "P3";
   if (opportunity.actionManual && opportunity.action) return opportunity.action;
@@ -248,6 +258,67 @@ const storageUriToFileName = (storageUri = "") => {
   const prefix = "/api/files/";
   if (!storageUri.startsWith(prefix)) return "";
   return sanitizeFileName(decodeURIComponent(storageUri.slice(prefix.length)));
+};
+
+const createRestoreTempDir = (prefix) => {
+  const parentDir = path.dirname(FILE_DIR);
+  fs.mkdirSync(parentDir, { recursive: true });
+  return fs.mkdtempSync(path.join(parentDir, prefix));
+};
+
+const cleanupRestoreTempDir = (dirPath) => {
+  if (!dirPath) return;
+  const parentDir = path.dirname(FILE_DIR);
+  const baseName = path.basename(dirPath);
+  if (path.dirname(dirPath) !== parentDir || !baseName.startsWith(".jobpilot-restore-")) return;
+  fs.rmSync(dirPath, { recursive: true, force: true });
+};
+
+const stageStoredFiles = (storedFiles) => {
+  const stagingDir = createRestoreTempDir(".jobpilot-restore-files-");
+  try {
+    storedFiles.forEach((file) => {
+      const storedFileName = storageUriToFileName(file.storageUri) || sanitizeFileName(file.fileName);
+      if (!storedFileName || !file.dataBase64) return;
+      fs.writeFileSync(path.join(stagingDir, storedFileName), Buffer.from(String(file.dataBase64), "base64"));
+    });
+    return stagingDir;
+  } catch (error) {
+    cleanupRestoreTempDir(stagingDir);
+    throw error;
+  }
+};
+
+const replaceStoredFileDir = (stagingDir) => {
+  let backupDir = "";
+  try {
+    if (fs.existsSync(FILE_DIR)) {
+      backupDir = createRestoreTempDir(".jobpilot-restore-current-");
+      fs.rmSync(backupDir, { recursive: true, force: true });
+      fs.renameSync(FILE_DIR, backupDir);
+    }
+    fs.renameSync(stagingDir, FILE_DIR);
+  } catch (error) {
+    if (backupDir && fs.existsSync(backupDir) && !fs.existsSync(FILE_DIR)) {
+      try {
+        fs.renameSync(backupDir, FILE_DIR);
+      } catch (restoreError) {
+        throw new Error(
+          `Failed to replace stored files: ${error instanceof Error ? error.message : String(error)}. Failed to restore previous files: ${
+            restoreError instanceof Error ? restoreError.message : String(restoreError)
+          }`,
+        );
+      }
+    }
+    throw error;
+  }
+  if (backupDir) {
+    try {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    } catch {
+      // The restore has already succeeded; stale temp cleanup should not fail the request.
+    }
+  }
 };
 
 const assertArray = (value, label) => {
@@ -415,6 +486,7 @@ const toInterviewSession = (row, sourceFiles = [], qaPairs = []) => ({
   role: row.role,
   round: row.round,
   date: row.date,
+  note: row.note ?? "",
   reviewPriority: normalizeOpportunityAction(row.review_priority, "P1"),
   sourceFiles,
   qaPairs,
@@ -534,6 +606,7 @@ const createSchema = (db) => {
       role TEXT NOT NULL,
       round TEXT NOT NULL,
       date TEXT NOT NULL,
+      note TEXT,
       review_priority TEXT NOT NULL DEFAULT 'P1',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -655,6 +728,7 @@ const migrateSchema = (db) => {
   ensureColumn(db, "opportunities", "ended_note", "TEXT");
   ensureColumn(db, "opportunities", "previous_status", "TEXT");
   ensureColumn(db, "opportunity_source_assets", "storage_uri", "TEXT");
+  ensureColumn(db, "interview_sessions", "note", "TEXT");
   ensureColumn(db, "interview_sessions", "review_priority", "TEXT NOT NULL DEFAULT 'P1'");
   ensureColumn(db, "interview_source_files", "content", "TEXT");
   ensureColumn(db, "interview_source_files", "storage_uri", "TEXT");
@@ -970,6 +1044,23 @@ export const createRepository = (db) => {
     );
   };
 
+  const timelineWithSyncedNextEvent = (timeline = [], status, nextAction, detail = "由当前岗位进度生成下一步动作") => [
+    ...timeline.filter((event) => event.status !== "next"),
+    ...(status !== "OFFER" && status !== "ENDED"
+      ? [
+          {
+            id: makeId("TL"),
+            occurredAt: "Next",
+            title: nextAction,
+            detail,
+            status: "next",
+          },
+        ]
+      : []),
+  ];
+
+  const hasLinkedInterviews = (opportunityId) => Boolean(db.prepare("SELECT 1 FROM interview_sessions WHERE opportunity_id = ? LIMIT 1").get(opportunityId));
+
   const createOpportunity = (input) => {
     const timestamp = nowIso();
     const status = input.status || "TO APPLY";
@@ -1020,24 +1111,39 @@ export const createRepository = (db) => {
   const updateOpportunity = (id, patch) => {
     const current = getOpportunity(id);
     if (!current) return null;
+    const hasExplicitStatus = "status" in patch && Boolean(patch.status);
+    const shouldRestoreEndedWithoutStatus =
+      current.status === "ENDED" &&
+      !hasExplicitStatus &&
+      (patch.endedAt === null || patch.endedReason === null || patch.endedNote === null || patch.previousStatus === null);
+    const restoredStatus = shouldRestoreEndedWithoutStatus ? getRestorableOpportunityStatus(current, hasLinkedInterviews(id)) : undefined;
     const next = {
       ...current,
       ...patch,
+      ...(restoredStatus ? { status: restoredStatus } : {}),
     };
-    if (patch.status === "ENDED") {
+    const statusChanged = next.status !== current.status;
+    if (hasExplicitStatus && patch.status === "ENDED") {
       next.endedAt = patch.endedAt || current.endedAt || nowIso();
       next.endedReason = patch.endedReason || current.endedReason || "OTHER";
       next.endedNote = patch.endedNote ?? current.endedNote ?? null;
       next.previousStatus =
-        patch.previousStatus || current.previousStatus || (current.status !== "ENDED" ? current.status : "APPLIED");
-    } else if ("status" in patch && patch.status && patch.status !== "ENDED") {
+        patch.previousStatus && patch.previousStatus !== "ENDED"
+          ? patch.previousStatus
+          : current.status !== "ENDED"
+            ? current.status
+            : getRestorableOpportunityStatus(current, hasLinkedInterviews(id));
+    } else if (shouldRestoreEndedWithoutStatus || (hasExplicitStatus && patch.status !== "ENDED")) {
       next.endedAt = patch.endedAt ?? null;
       next.endedReason = patch.endedReason ?? null;
       next.endedNote = patch.endedNote ?? null;
       next.previousStatus = patch.previousStatus ?? null;
     }
+    if (statusChanged && !("nextAction" in patch)) {
+      next.nextAction = defaultOpportunityNextAction(next.status);
+    }
     if ("deadline" in patch && !("dueDate" in patch)) next.dueDate = inferDueDateFromText(next.deadline);
-    if (!next.actionManual && ["status", "deadline", "dueDate", "priority", "match"].some((field) => field in patch) && !("action" in patch)) {
+    if (!next.actionManual && (statusChanged || ["deadline", "dueDate", "priority", "match"].some((field) => field in patch)) && !("action" in patch)) {
       next.action = computeOpportunityAction(next);
     }
     if ("actionManual" in patch && patch.actionManual === false && !("action" in patch)) {
@@ -1089,6 +1195,7 @@ export const createRepository = (db) => {
     );
     if (patch.sourceAssets) replaceOpportunitySourceAssets(id, patch.sourceAssets);
     if (patch.timeline) replaceOpportunityTimeline(id, patch.timeline);
+    else if (statusChanged) replaceOpportunityTimeline(id, timelineWithSyncedNextEvent(current.timeline, next.status, next.nextAction));
     return getOpportunity(id);
   };
 
@@ -1096,7 +1203,7 @@ export const createRepository = (db) => {
     const current = getOpportunity(id);
     if (!current) return null;
     const status = input.status || current.status;
-    const nextAction = input.nextAction || opportunityStatusNextAction[status] || current.nextAction;
+    const nextAction = input.nextAction || defaultOpportunityNextAction(status) || current.nextAction;
     const progressEvent = {
       id: input.timelineEvent?.id || makeId("TL"),
       occurredAt: input.timelineEvent?.occurredAt || "Now",
@@ -1104,21 +1211,7 @@ export const createRepository = (db) => {
       detail: input.timelineEvent?.detail || "岗位进度更新",
       status: "done",
     };
-    const nextTimeline = [
-      ...current.timeline.filter((event) => event.status !== "next"),
-      progressEvent,
-      ...(status !== "OFFER" && status !== "ENDED"
-        ? [
-            {
-              id: makeId("TL"),
-              occurredAt: "Next",
-              title: nextAction,
-              detail: "由当前岗位进度生成下一步动作",
-              status: "next",
-            },
-          ]
-        : []),
-    ];
+    const nextTimeline = timelineWithSyncedNextEvent([...current.timeline, progressEvent], status, nextAction);
     const updatedOpportunity = updateOpportunity(id, {
       status,
       ...(status === "ENDED"
@@ -1126,7 +1219,12 @@ export const createRepository = (db) => {
             endedAt: input.endedAt || nowIso(),
             endedReason: input.endedReason || "OTHER",
             endedNote: input.endedNote ?? null,
-            previousStatus: input.previousStatus || current.previousStatus || (current.status !== "ENDED" ? current.status : "APPLIED"),
+            previousStatus:
+              input.previousStatus && input.previousStatus !== "ENDED"
+                ? input.previousStatus
+                : current.status !== "ENDED"
+                  ? current.status
+                  : getRestorableOpportunityStatus(current, hasLinkedInterviews(id)),
           }
         : current.status === "ENDED"
           ? {
@@ -1219,13 +1317,14 @@ export const createRepository = (db) => {
     return getQaPair(id);
   };
 
-  const createInterview = (input) => {
+  const createInterview = (input, options = {}) => {
+    const { advanceOpportunity = true } = options;
     const timestamp = nowIso();
     const id = input.id || makeId("INT");
     db.prepare(`
       INSERT INTO interview_sessions (
-        id, opportunity_id, company, role, round, date, review_priority, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, opportunity_id, company, role, round, date, note, review_priority, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.opportunityId || null,
@@ -1233,6 +1332,7 @@ export const createRepository = (db) => {
       input.role?.trim() || "未填写岗位",
       input.round?.trim() || "面试",
       input.date?.trim() || "Today",
+      input.note?.trim() || "",
       normalizeOpportunityAction(input.reviewPriority, "P1"),
       timestamp,
       timestamp,
@@ -1258,7 +1358,8 @@ export const createRepository = (db) => {
     );
 
     (input.qaPairs ?? []).forEach((pair) => createQaPair(id, pair));
-    if (input.opportunityId && getOpportunity(input.opportunityId)) {
+    const linkedOpportunity = input.opportunityId ? getOpportunity(input.opportunityId) : null;
+    if (advanceOpportunity && linkedOpportunity && shouldAdvanceLinkedOpportunityAfterInterview(linkedOpportunity.status)) {
       addOpportunityProgress(input.opportunityId, {
         status: "WAITING",
         timelineEvent: {
@@ -1287,10 +1388,11 @@ export const createRepository = (db) => {
           role = ?,
           round = ?,
           date = ?,
+          note = ?,
           review_priority = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(next.opportunityId || null, next.company, next.role, next.round, next.date, normalizeOpportunityAction(next.reviewPriority, "P1"), nowIso(), id);
+    `).run(next.opportunityId || null, next.company, next.role, next.round, next.date, next.note || "", normalizeOpportunityAction(next.reviewPriority, "P1"), nowIso(), id);
     return getInterview(id);
   };
 
@@ -1400,6 +1502,11 @@ export const createRepository = (db) => {
       WHERE id = ?
     `).run(nextName, nextParentId, Number(patch.sortOrder ?? current.sortOrder) || 0, nowIso(), id);
     return getAnswerCategory(id);
+  };
+
+  const restoreAnswerCategory = (category) => {
+    if (!category.id) return createAnswerCategory(category);
+    return answerCategoryExists(category.id) ? updateAnswerCategory(category.id, category) : createAnswerCategory(category);
   };
 
   const collectAnswerCategoryDescendantIds = (id) => {
@@ -1886,7 +1993,7 @@ export const createRepository = (db) => {
     storedFiles: listStoredFiles(),
   });
 
-  const restoreBackup = (backup) => {
+  const parseBackupPayload = (backup) => {
     const resumeVersions = assertArray(backup?.resumeVersions, "resumeVersions");
     const opportunities = assertArray(backup?.opportunities, "opportunities");
     const interviewSessions = assertArray(backup?.interviewSessions, "interviewSessions");
@@ -1895,87 +2002,142 @@ export const createRepository = (db) => {
     const storedFiles = assertArray(backup?.storedFiles ?? [], "storedFiles");
     const weeklyPlan = backup?.weeklyPlan;
     if (!weeklyPlan || typeof weeklyPlan !== "object") throw new Error("Backup field weeklyPlan must be an object");
+    return {
+      resumeVersions,
+      opportunities,
+      interviewSessions,
+      answerCards,
+      answerCategories,
+      storedFiles,
+      weeklyPlan,
+      weekStart: backup?.weekStart,
+    };
+  };
 
-    db.exec("BEGIN");
-    try {
-      db.exec(`
-        DELETE FROM weekly_tasks;
-        DELETE FROM weekly_plans;
-        DELETE FROM qa_pairs;
-        DELETE FROM interview_source_files;
-        DELETE FROM interview_sessions;
-        DELETE FROM opportunity_timeline_events;
-        DELETE FROM opportunity_source_assets;
-        DELETE FROM opportunities;
-        DELETE FROM answer_cards;
-        DELETE FROM answer_categories;
-        DELETE FROM resume_versions;
-      `);
+  const restoreBackupRows = (backupData) => {
+    const { resumeVersions, opportunities, interviewSessions, answerCards, answerCategories, weeklyPlan, weekStart } = backupData;
+    db.exec(`
+      DELETE FROM weekly_tasks;
+      DELETE FROM weekly_plans;
+      DELETE FROM qa_pairs;
+      DELETE FROM interview_source_files;
+      DELETE FROM interview_sessions;
+      DELETE FROM opportunity_timeline_events;
+      DELETE FROM opportunity_source_assets;
+      DELETE FROM opportunities;
+      DELETE FROM answer_cards;
+      DELETE FROM answer_categories;
+      DELETE FROM resume_versions;
+    `);
 
-      fs.rmSync(FILE_DIR, { recursive: true, force: true });
-      fs.mkdirSync(FILE_DIR, { recursive: true });
-      storedFiles.forEach((file) => {
-        const storedFileName = storageUriToFileName(file.storageUri) || sanitizeFileName(file.fileName);
-        if (!storedFileName || !file.dataBase64) return;
-        fs.writeFileSync(path.join(FILE_DIR, storedFileName), Buffer.from(String(file.dataBase64), "base64"));
-      });
+    const resumeIds = new Set(resumeVersions.map((resume) => resume.id).filter(Boolean));
+    resumeVersions.forEach((resume) => createResume(resume));
 
-      const resumeIds = new Set(resumeVersions.map((resume) => resume.id).filter(Boolean));
-      resumeVersions.forEach((resume) => createResume(resume));
+    const opportunityIds = new Set(opportunities.map((opportunity) => opportunity.id).filter(Boolean));
+    const linkedInterviewOpportunityIds = new Set(interviewSessions.map((session) => session.opportunityId).filter((opportunityId) => opportunityIds.has(opportunityId)));
+    opportunities.forEach((opportunity) =>
+      createOpportunity({
+        ...opportunity,
+        previousStatus:
+          opportunity.status === "ENDED" && !opportunity.previousStatus && linkedInterviewOpportunityIds.has(opportunity.id)
+            ? getRestorableOpportunityStatus(opportunity, true)
+            : opportunity.previousStatus,
+        resumeId: resumeIds.has(opportunity.resumeId) ? opportunity.resumeId : "",
+      }),
+    );
 
-      const opportunityIds = new Set(opportunities.map((opportunity) => opportunity.id).filter(Boolean));
-      opportunities.forEach((opportunity) =>
-        createOpportunity({
-          ...opportunity,
-          resumeId: resumeIds.has(opportunity.resumeId) ? opportunity.resumeId : "",
-        }),
-      );
-
-      interviewSessions.forEach((session) =>
-        createInterview({
+    interviewSessions.forEach((session) =>
+      createInterview(
+        {
           ...session,
           opportunityId: opportunityIds.has(session.opportunityId) ? session.opportunityId : undefined,
-        }),
-      );
+        },
+        { advanceOpportunity: false },
+      ),
+    );
 
-      ensureDefaultAnswerCategories(db);
-      [...answerCategories]
-        .sort((left, right) => (left.parentId ? 1 : 0) - (right.parentId ? 1 : 0))
-        .forEach((category) => {
-        if (category.id === UNCATEGORIZED_ANSWER_CATEGORY_ID) {
-          updateAnswerCategory(category.id, { sortOrder: category.sortOrder });
-          return;
-        }
-        createAnswerCategory(category);
-      });
-      answerCards.forEach((answer) => createAnswer(answer));
+    ensureDefaultAnswerCategories(db);
+    [...answerCategories]
+      .sort((left, right) => (left.parentId ? 1 : 0) - (right.parentId ? 1 : 0))
+      .forEach(restoreAnswerCategory);
+    answerCards.forEach((answer) => createAnswer(answer));
 
-      const timestamp = nowIso();
-      const planId = "WP-RESTORED";
-      db.prepare(`
-        INSERT INTO weekly_plans (
-          id, week_start, target_applications, focus_directions_json, focus_cities_json,
-          focus_companies_json, practice_themes_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        planId,
-        weeklyPlan.weekStart || backup.weekStart || new Date().toISOString().slice(0, 10),
-        Number.isFinite(Number(weeklyPlan.targetApplications ?? 0)) ? Math.max(0, Math.round(Number(weeklyPlan.targetApplications ?? 0))) : 0,
-        JSON.stringify(assertArray(weeklyPlan.focusDirections ?? [], "weeklyPlan.focusDirections")),
-        JSON.stringify(assertArray(weeklyPlan.focusCities ?? [], "weeklyPlan.focusCities")),
-        JSON.stringify(assertArray(weeklyPlan.focusCompanies ?? [], "weeklyPlan.focusCompanies")),
-        JSON.stringify(assertArray(weeklyPlan.practiceThemes ?? [], "weeklyPlan.practiceThemes")),
-        timestamp,
-        timestamp,
-      );
+    const timestamp = nowIso();
+    const planId = "WP-RESTORED";
+    db.prepare(`
+      INSERT INTO weekly_plans (
+        id, week_start, target_applications, focus_directions_json, focus_cities_json,
+        focus_companies_json, practice_themes_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      planId,
+      weeklyPlan.weekStart || weekStart || new Date().toISOString().slice(0, 10),
+      Number.isFinite(Number(weeklyPlan.targetApplications ?? 0)) ? Math.max(0, Math.round(Number(weeklyPlan.targetApplications ?? 0))) : 0,
+      JSON.stringify(assertArray(weeklyPlan.focusDirections ?? [], "weeklyPlan.focusDirections")),
+      JSON.stringify(assertArray(weeklyPlan.focusCities ?? [], "weeklyPlan.focusCities")),
+      JSON.stringify(assertArray(weeklyPlan.focusCompanies ?? [], "weeklyPlan.focusCompanies")),
+      JSON.stringify(assertArray(weeklyPlan.practiceThemes ?? [], "weeklyPlan.practiceThemes")),
+      timestamp,
+      timestamp,
+    );
 
-      assertArray(weeklyPlan.tasks ?? [], "weeklyPlan.tasks").forEach((task) => createWeeklyTask(task));
+    assertArray(weeklyPlan.tasks ?? [], "weeklyPlan.tasks").forEach((task) => createWeeklyTask(task));
+  };
+
+  const restoreBackupRowsInTransaction = (backupData) => {
+    db.exec("BEGIN");
+    try {
+      restoreBackupRows(backupData);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
     }
+  };
 
+  const rollbackCommittedRestore = (previousBackup) => {
+    const previousBackupData = parseBackupPayload(previousBackup);
+    let previousFileStage = stageStoredFiles(previousBackupData.storedFiles);
+    try {
+      restoreBackupRowsInTransaction(previousBackupData);
+      replaceStoredFileDir(previousFileStage);
+      previousFileStage = "";
+    } finally {
+      cleanupRestoreTempDir(previousFileStage);
+    }
+  };
+
+  const restoreBackup = (backup) => {
+    const backupData = parseBackupPayload(backup);
+    const previousBackup = createBackup();
+    let stagedFileDir = stageStoredFiles(backupData.storedFiles);
+    let databaseCommitted = false;
+    try {
+      restoreBackupRowsInTransaction(backupData);
+      databaseCommitted = true;
+      replaceStoredFileDir(stagedFileDir);
+      stagedFileDir = "";
+    } catch (error) {
+      if (databaseCommitted) {
+        try {
+          rollbackCommittedRestore(previousBackup);
+        } catch (rollbackError) {
+          throw new Error(
+            `Stored file restore failed after database restore, and rollback failed. Original error: ${
+              error instanceof Error ? error.message : String(error)
+            }. Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+          );
+        }
+        throw new Error(
+          `Stored file restore failed after database restore; previous database and files were restored. ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      throw error;
+    } finally {
+      cleanupRestoreTempDir(stagedFileDir);
+    }
     return createBackup();
   };
 

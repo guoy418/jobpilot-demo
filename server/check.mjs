@@ -1,6 +1,16 @@
 import http from "node:http";
 
 const API_URL = process.env.API_URL || "http://127.0.0.1:8787";
+const defaultAnswerCategoryNames = [
+  "尚未归类",
+  "个人基础信息类",
+  "行为问题",
+  "动机相关",
+  "通用问题案例库",
+  "某段实习相关",
+  "项目经历问题",
+  "业务理解/细节追问",
+];
 
 const withMockAiServer = async (handler, run) => {
   const server = http.createServer(handler);
@@ -40,6 +50,8 @@ const getJson = async (path) => {
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
   return response.json();
 };
+
+const cloneJson = (value) => JSON.parse(JSON.stringify(value));
 
 const getOpportunityTodayActions = async (opportunityId) => {
   const actions = await getJson("/api/dashboard/today-actions");
@@ -112,6 +124,223 @@ if (!restoredFile.ok || (await restoredFile.text()) !== "JobPilot file check") {
   throw new Error("POST /api/backup did not restore file content");
 }
 console.log("PASS POST /api/backup restores files");
+
+const categoriesAfterRestore = await fetch(`${API_URL}/api/answer-categories`).then((response) => response.json());
+const categoryNamesAfterRestore = categoriesAfterRestore.map((category) => category.name);
+for (const defaultName of defaultAnswerCategoryNames) {
+  if (categoryNamesAfterRestore.filter((name) => name === defaultName).length !== 1) {
+    throw new Error("POST /api/backup duplicated default answer categories");
+  }
+}
+const categoryIdsAfterRestore = new Set(categoriesAfterRestore.map((category) => category.id));
+const answersAfterRestore = await fetch(`${API_URL}/api/answers`).then((response) => response.json());
+if (!answersAfterRestore.every((answer) => categoryIdsAfterRestore.has(answer.categoryId))) {
+  throw new Error("POST /api/backup restored invalid answer category references");
+}
+console.log("PASS POST /api/backup dedupes answer categories");
+
+const failedRestoreFileName = `api-check-staged-only-${Date.now()}.txt`;
+const duplicateSourceId = `SRC-CHECK-DUPLICATE-${Date.now()}`;
+const failedDbBackup = cloneJson(fileBackup);
+failedDbBackup.storedFiles = [
+  {
+    storageUri: `/api/files/${encodeURIComponent(failedRestoreFileName)}`,
+    fileName: failedRestoreFileName,
+    fileSize: "27 B",
+    dataBase64: Buffer.from("should not replace live files", "utf8").toString("base64"),
+  },
+];
+failedDbBackup.opportunities = [
+  {
+    ...failedDbBackup.opportunities[0],
+    id: `OP-CHECK-FAILED-RESTORE-${Date.now()}`,
+    sourceAssets: [
+      {
+        id: duplicateSourceId,
+        kind: "jd-text",
+        title: "Duplicate source",
+        detail: "forces restore rollback",
+        createdAt: "Now",
+        content: "first",
+      },
+      {
+        id: duplicateSourceId,
+        kind: "jd-text",
+        title: "Duplicate source",
+        detail: "forces restore rollback",
+        createdAt: "Now",
+        content: "second",
+      },
+    ],
+  },
+];
+const failedDbRestore = await fetch(`${API_URL}/api/backup`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(failedDbBackup),
+});
+if (failedDbRestore.ok) throw new Error("POST /api/backup with invalid DB payload should fail");
+const liveFileAfterFailedRestore = await fetch(`${API_URL}${uploadedFilePayload.storageUri}`);
+if (!liveFileAfterFailedRestore.ok || (await liveFileAfterFailedRestore.text()) !== "JobPilot file check") {
+  throw new Error("failed POST /api/backup should leave existing files untouched");
+}
+const stagedOnlyFile = await fetch(`${API_URL}/api/files/${encodeURIComponent(failedRestoreFileName)}`);
+if (stagedOnlyFile.ok) {
+  throw new Error("failed POST /api/backup should not publish staged backup files");
+}
+console.log("PASS failed POST /api/backup preserves live files");
+
+const preservedOpportunityId = `OP-CHECK-RESTORE-PRESERVE-${Date.now()}`;
+const preservedInterviewId = `INT-CHECK-RESTORE-PRESERVE-${Date.now()}`;
+const preservedTimeline = [
+  {
+    id: `TL-CHECK-RESTORE-PRESERVE-1-${Date.now()}`,
+    occurredAt: "2026-06-01",
+    title: "API check screening",
+    detail: "backup status should remain screening",
+    status: "done",
+  },
+  {
+    id: `TL-CHECK-RESTORE-PRESERVE-2-${Date.now()}`,
+    occurredAt: "Next",
+    title: "等待筛选反馈",
+    detail: "backup next action should remain unchanged",
+    status: "next",
+  },
+];
+const preserveStatusBackup = cloneJson(fileBackup);
+preserveStatusBackup.opportunities.push({
+  id: preservedOpportunityId,
+  title: "API check restore preserved opportunity",
+  company: "API check restore company",
+  status: "SCREENING",
+  priority: "B",
+  match: "MEDIUM",
+  action: "P2",
+  actionManual: true,
+  city: "Test City",
+  deadline: "待定",
+  dueDate: "",
+  resumeId: preserveStatusBackup.resumeVersions[0]?.id ?? "",
+  nextAction: "等待筛选反馈",
+  jdSummary: "restore should preserve status",
+  jdText: "restore should preserve timeline",
+  sourceAssets: [],
+  timeline: preservedTimeline,
+});
+preserveStatusBackup.interviewSessions.push({
+  id: preservedInterviewId,
+  opportunityId: preservedOpportunityId,
+  company: "API check restore company",
+  role: "API check restore preserved opportunity",
+  round: "linked restore interview",
+  date: "2026-06-02",
+  reviewPriority: "P2",
+  sourceFiles: [],
+  qaPairs: [],
+});
+const preserveStatusRestore = await fetch(`${API_URL}/api/backup`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(preserveStatusBackup),
+});
+if (!preserveStatusRestore.ok) throw new Error(`POST /api/backup preserve status returned ${preserveStatusRestore.status}`);
+const restoredPreservedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(preservedOpportunityId)}`).then((response) => response.json());
+if (restoredPreservedOpportunity.status !== "SCREENING" || restoredPreservedOpportunity.action !== "P2") {
+  throw new Error("POST /api/backup rewrote linked opportunity status/action while restoring interviews");
+}
+const restoredTimeline = restoredPreservedOpportunity.timeline.map((event) => ({
+  id: event.id,
+  occurredAt: event.occurredAt,
+  title: event.title,
+  detail: event.detail,
+  status: event.status,
+}));
+if (JSON.stringify(restoredTimeline) !== JSON.stringify(preservedTimeline)) {
+  throw new Error("POST /api/backup rewrote linked opportunity timeline while restoring interviews");
+}
+console.log("PASS POST /api/backup preserves linked opportunity status");
+
+const fallbackRestoreOpportunityId = `OP-CHECK-ENDED-FALLBACK-${Date.now()}`;
+const fallbackRestoreInterviewId = `INT-CHECK-ENDED-FALLBACK-${Date.now()}`;
+const fallbackRestoreBackup = cloneJson(fileBackup);
+fallbackRestoreBackup.opportunities.push({
+  id: fallbackRestoreOpportunityId,
+  title: "API check ended fallback opportunity",
+  company: "API check ended fallback company",
+  status: "ENDED",
+  endedAt: "2026-06-20",
+  endedReason: "REJECTED",
+  endedNote: "missing previous status should restore from linked interview",
+  priority: "B",
+  match: "MEDIUM",
+  action: "P3",
+  city: "Test City",
+  deadline: "待定",
+  dueDate: "",
+  resumeId: fallbackRestoreBackup.resumeVersions[0]?.id ?? "",
+  nextAction: "已结束，保留历史记录",
+  jdSummary: "restore fallback should inspect linked interviews",
+  jdText: "restore fallback temporary JD",
+  sourceAssets: [],
+  timeline: [
+    {
+      id: `TL-CHECK-ENDED-FALLBACK-${Date.now()}`,
+      occurredAt: "2026-06-20",
+      title: "API check ended fallback",
+      detail: "temporary",
+      status: "done",
+    },
+  ],
+});
+fallbackRestoreBackup.interviewSessions.push({
+  id: fallbackRestoreInterviewId,
+  opportunityId: fallbackRestoreOpportunityId,
+  company: "API check ended fallback company",
+  role: "API check ended fallback opportunity",
+  round: "linked fallback interview",
+  date: "2026-06-21",
+  reviewPriority: "P2",
+  sourceFiles: [],
+  qaPairs: [],
+});
+const fallbackRestore = await fetch(`${API_URL}/api/backup`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(fallbackRestoreBackup),
+});
+if (!fallbackRestore.ok) throw new Error(`POST /api/backup ended fallback returned ${fallbackRestore.status}`);
+const restoredFallback = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(fallbackRestoreOpportunityId)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    endedAt: null,
+    endedReason: null,
+    endedNote: null,
+    previousStatus: null,
+  }),
+});
+if (!restoredFallback.ok) throw new Error(`PATCH ended fallback /api/opportunities/:id returned ${restoredFallback.status}`);
+const restoredFallbackPayload = await restoredFallback.json();
+if (
+  restoredFallbackPayload.status !== "WAITING" ||
+  restoredFallbackPayload.endedAt ||
+  restoredFallbackPayload.endedReason ||
+  restoredFallbackPayload.endedNote ||
+  restoredFallbackPayload.previousStatus ||
+  restoredFallbackPayload.nextAction !== "等待结果并准备复盘"
+) {
+  throw new Error("PATCH /api/opportunities/:id did not infer WAITING restore fallback from linked interviews");
+}
+const fallbackNextEvents = restoredFallbackPayload.timeline.filter((event) => event.status === "next");
+if (fallbackNextEvents.length !== 1 || fallbackNextEvents[0].title !== "等待结果并准备复盘") {
+  throw new Error("PATCH /api/opportunities/:id ended fallback did not sync next timeline event");
+}
+const deletedFallbackOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(fallbackRestoreOpportunityId)}`, { method: "DELETE" });
+if (!deletedFallbackOpportunity.ok) throw new Error(`DELETE ended fallback /api/opportunities/:id returned ${deletedFallbackOpportunity.status}`);
+const deletedFallbackInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(fallbackRestoreInterviewId)}`, { method: "DELETE" });
+if (!deletedFallbackInterview.ok) throw new Error(`DELETE ended fallback /api/interviews/:id returned ${deletedFallbackInterview.status}`);
+console.log("PASS restored ENDED opportunity infers linked interview fallback");
 
 const parsedOpportunity = await fetch(`${API_URL}/api/parse/opportunity`, {
   method: "POST",
@@ -1117,13 +1346,13 @@ const createdLinkedInterview = await fetch(`${API_URL}/api/interviews`, {
 if (!createdLinkedInterview.ok) throw new Error(`POST linked /api/interviews returned ${createdLinkedInterview.status}`);
 const opportunityAfterLinkedInterview = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`).then((response) => response.json());
 if (opportunityAfterLinkedInterview.status !== "WAITING") {
-  throw new Error("POST linked /api/interviews did not advance opportunity to WAITING");
+  throw new Error("POST linked /api/interviews should preserve already WAITING opportunity status");
 }
 const todayActionsAfterLinkedInterview = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
 if (todayActionsAfterLinkedInterview.some((action) => action.source === "opportunity" && action.targetId === tempOpportunity.id)) {
   throw new Error("POST linked /api/interviews should not create waiting follow-up today action");
 }
-console.log("PASS POST linked /api/interviews advances opportunity");
+console.log("PASS POST linked /api/interviews preserves WAITING opportunity");
 
 const reinterviewingProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
   method: "POST",
@@ -1141,6 +1370,45 @@ if (!reinterviewingProgress.ok) throw new Error(`reinterviewing POST /api/opport
 await expectOpportunityTodayAction(tempOpportunity.id, "restored INTERVIEWING opportunity before end");
 console.log("PASS INTERVIEWING opportunity active before ending");
 
+const linkedInterviewFromInterviewing = {
+  ...linkedInterview,
+  id: `INT-CHECK-LINKED-INTERVIEWING-${Date.now()}`,
+  round: "linked interview from interviewing",
+  qaPairs: [
+    {
+      ...linkedInterview.qaPairs[0],
+      id: `QA-CHECK-LINKED-INTERVIEWING-${Date.now()}`,
+    },
+  ],
+};
+const createdLinkedInterviewFromInterviewing = await fetch(`${API_URL}/api/interviews`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(linkedInterviewFromInterviewing),
+});
+if (!createdLinkedInterviewFromInterviewing.ok) {
+  throw new Error(`POST linked interviewing /api/interviews returned ${createdLinkedInterviewFromInterviewing.status}`);
+}
+const opportunityAfterInterviewingLink = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`).then((response) => response.json());
+if (opportunityAfterInterviewingLink.status !== "WAITING" || opportunityAfterInterviewingLink.nextAction !== "等待结果并准备复盘") {
+  throw new Error("POST linked /api/interviews should only auto-advance INTERVIEWING opportunity to WAITING with synced nextAction");
+}
+console.log("PASS POST linked /api/interviews advances INTERVIEWING opportunity");
+
+const reinterviewingBeforeEndProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "INTERVIEWING",
+    timelineEvent: {
+      title: "API check reinterviewing before end restore",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!reinterviewingBeforeEndProgress.ok) throw new Error(`second reinterviewing POST /api/opportunities/:id/progress returned ${reinterviewingBeforeEndProgress.status}`);
+
 const endedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
@@ -1150,7 +1418,6 @@ const endedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURICo
     endedReason: "REJECTED",
     endedNote: "API check ended note",
     previousStatus: "INTERVIEWING",
-    nextAction: "已结束，保留历史记录",
   }),
 });
 if (!endedOpportunity.ok) throw new Error(`PATCH ended /api/opportunities/:id returned ${endedOpportunity.status}`);
@@ -1158,7 +1425,8 @@ const endedOpportunityPayload = await endedOpportunity.json();
 if (
   endedOpportunityPayload.status !== "ENDED" ||
   endedOpportunityPayload.endedReason !== "REJECTED" ||
-  endedOpportunityPayload.previousStatus !== "INTERVIEWING"
+  endedOpportunityPayload.previousStatus !== "INTERVIEWING" ||
+  endedOpportunityPayload.nextAction !== "已结束，保留历史记录"
 ) {
   throw new Error("PATCH /api/opportunities/:id did not persist ended fields");
 }
@@ -1188,7 +1456,6 @@ const restoredEndedOpportunity = await fetch(`${API_URL}/api/opportunities/${enc
     endedReason: null,
     endedNote: null,
     previousStatus: null,
-    nextAction: "准备下一轮面试",
   }),
 });
 if (!restoredEndedOpportunity.ok) throw new Error(`restore PATCH /api/opportunities/:id returned ${restoredEndedOpportunity.status}`);
@@ -1198,7 +1465,8 @@ if (
   restoredEndedOpportunityPayload.endedAt ||
   restoredEndedOpportunityPayload.endedReason ||
   restoredEndedOpportunityPayload.endedNote ||
-  restoredEndedOpportunityPayload.previousStatus
+  restoredEndedOpportunityPayload.previousStatus ||
+  restoredEndedOpportunityPayload.nextAction !== "准备下一轮面试"
 ) {
   throw new Error("restore PATCH /api/opportunities/:id did not clear ended fields");
 }
@@ -1207,6 +1475,8 @@ console.log("PASS restored ENDED opportunity re-enters active handling");
 
 const deletedLinkedInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(linkedInterview.id)}`, { method: "DELETE" });
 if (!deletedLinkedInterview.ok) throw new Error(`DELETE linked /api/interviews/:id returned ${deletedLinkedInterview.status}`);
+const deletedLinkedInterviewFromInterviewing = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(linkedInterviewFromInterviewing.id)}`, { method: "DELETE" });
+if (!deletedLinkedInterviewFromInterviewing.ok) throw new Error(`DELETE linked interviewing /api/interviews/:id returned ${deletedLinkedInterviewFromInterviewing.status}`);
 
 const offerProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
   method: "POST",
@@ -1268,6 +1538,83 @@ if (dashboardAfterOldSubmittedOpportunity.submittedApplications !== dashboardBef
 const deletedOldSubmittedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(oldSubmittedOpportunity.id)}`, { method: "DELETE" });
 if (!deletedOldSubmittedOpportunity.ok) throw new Error(`DELETE old submitted /api/opportunities/:id returned ${deletedOldSubmittedOpportunity.status}`);
 console.log("PASS dashboard ignores old submitted applications");
+
+const patchStatusOpportunity = {
+  ...tempOpportunity,
+  id: `OP-CHECK-PATCH-STATUS-${Date.now()}`,
+  status: "TO APPLY",
+  nextAction: "stale action before status patch",
+  timeline: [
+    {
+      id: `TL-CHECK-PATCH-STATUS-${Date.now()}`,
+      occurredAt: "Now",
+      title: "API check patch status created",
+      detail: "temporary",
+      status: "done",
+    },
+  ],
+};
+const createdPatchStatusOpportunity = await fetch(`${API_URL}/api/opportunities`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(patchStatusOpportunity),
+});
+if (!createdPatchStatusOpportunity.ok) throw new Error(`POST patch-status /api/opportunities returned ${createdPatchStatusOpportunity.status}`);
+const earlyLinkedInterview = {
+  id: `INT-CHECK-EARLY-LINKED-${Date.now()}`,
+  opportunityId: patchStatusOpportunity.id,
+  company: patchStatusOpportunity.company,
+  role: patchStatusOpportunity.title,
+  round: "early linked interview",
+  date: "Today",
+  sourceFiles: [],
+  qaPairs: [
+    {
+      id: `QA-CHECK-EARLY-LINKED-${Date.now()}`,
+      question: "early linked interview question",
+      originalAnswer: "temporary",
+      framework: "STAR",
+      critique: "temporary",
+      optimizedAnswer: "temporary",
+      type: "behavioral",
+      weak: false,
+    },
+  ],
+};
+const createdEarlyLinkedInterview = await fetch(`${API_URL}/api/interviews`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(earlyLinkedInterview),
+});
+if (!createdEarlyLinkedInterview.ok) throw new Error(`POST early linked /api/interviews returned ${createdEarlyLinkedInterview.status}`);
+const opportunityAfterEarlyLinkedInterview = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(patchStatusOpportunity.id)}`).then((response) => response.json());
+if (opportunityAfterEarlyLinkedInterview.status !== "TO APPLY" || opportunityAfterEarlyLinkedInterview.nextAction !== patchStatusOpportunity.nextAction) {
+  throw new Error("POST linked /api/interviews should not auto-advance early-stage opportunities");
+}
+const deletedEarlyLinkedInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(earlyLinkedInterview.id)}`, { method: "DELETE" });
+if (!deletedEarlyLinkedInterview.ok) throw new Error(`DELETE early linked /api/interviews/:id returned ${deletedEarlyLinkedInterview.status}`);
+console.log("PASS POST linked /api/interviews preserves early opportunity");
+const patchedStatusOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(patchStatusOpportunity.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ status: "WRITTEN TEST" }),
+});
+if (!patchedStatusOpportunity.ok) throw new Error(`PATCH status /api/opportunities/:id returned ${patchedStatusOpportunity.status}`);
+const patchedStatusOpportunityPayload = await patchedStatusOpportunity.json();
+if (patchedStatusOpportunityPayload.status !== "WRITTEN TEST" || patchedStatusOpportunityPayload.nextAction !== "完成笔试并同步结果") {
+  throw new Error("PATCH /api/opportunities/:id status change should sync nextAction");
+}
+const patchedStatusNextEvents = patchedStatusOpportunityPayload.timeline.filter((event) => event.status === "next");
+if (
+  patchedStatusNextEvents.length !== 1 ||
+  patchedStatusNextEvents[0].title !== "完成笔试并同步结果" ||
+  patchedStatusNextEvents[0].detail !== "由当前岗位进度生成下一步动作"
+) {
+  throw new Error("PATCH /api/opportunities/:id status change should sync single next timeline event");
+}
+const deletedPatchStatusOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(patchStatusOpportunity.id)}`, { method: "DELETE" });
+if (!deletedPatchStatusOpportunity.ok) throw new Error(`DELETE patch-status /api/opportunities/:id returned ${deletedPatchStatusOpportunity.status}`);
+console.log("PASS PATCH /api/opportunities/:id status syncs nextAction");
 
 const tempAnswer = {
   id: `AC-CHECK-${Date.now()}`,

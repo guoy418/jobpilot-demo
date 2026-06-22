@@ -134,6 +134,7 @@ export type InterviewSession = {
   role: string;
   round: string;
   date: string;
+  note?: string;
   reviewPriority: OpportunityAction;
   sourceFiles?: SessionFile[];
   qaPairs: QaPair[];
@@ -231,6 +232,7 @@ export type ModuleComposerDraft = {
   role: string;
   round: string;
   date: string;
+  reviewPriority: OpportunityAction;
   question: string;
   framework: string;
   answer: string;

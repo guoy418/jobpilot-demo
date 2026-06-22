@@ -251,6 +251,7 @@ export const createModuleComposerDraft = (resumeId = "", opportunityId = ""): Mo
   role: "",
   round: "一面",
   date: "Today",
+  reviewPriority: "P1",
   question: "",
   framework: "背景 -> 目标 -> 动作 -> 指标结果 -> 复盘限制",
   answer: "",
