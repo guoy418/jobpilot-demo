@@ -1,89 +1,200 @@
-# JobPilot Local MVP
+# JobPilot 本地求职工作台
 
-Last updated: 2026-06-09
+找实习和找工作时，最容易乱的不是信息不够，而是信息太散：岗位在收藏夹里，JD 在截图里，简历版本散在文件夹里，面试复盘写在不同文档里，真正要做的下一步却不清楚。
 
-JobPilot is a local-first job search workspace for personal use, with a separate static public demo mode for portfolio/interviewer sharing.
+JobPilot 把这些求职材料整理成一个本地工作台。你只需要持续维护岗位、简历和复盘，它会帮你把“投哪个、用哪份简历、下一步做什么、今天先推进什么”串起来。
 
-## Run For Real Personal Use
+它默认运行在你的电脑上，不需要注册账号；真实简历、录音、截图和求职记录都保存在本机，适合长期维护自己的求职进度。
 
-Use one command:
+## 亮点
+
+- **今日行动自动生成**：不用手写待办清单，系统会根据岗位阶段、截止时间、面试复盘和本周计划，整理出今天最该推进的事。
+- **岗位和简历真正关联**：每个岗位都能绑定使用的简历版本，反过来也能看到一份简历投过哪些岗位，避免材料版本混乱。
+- **面试复盘可沉淀**：把面试问题、原回答、评价、优化框架和改进答案留在同一个地方，后续可以转成答案卡或练习任务。
+- **本周计划连接执行**：不只是记录目标，还能把投递、复盘、笔试、项目表达等任务拆成可完成的行动。
+- **本地优先，更适合真实数据**：数据库和上传文件默认保存在本机，适合存放简历、录音、截图等隐私材料。
+- **可选智能整理**：不配置 AI 也能用；配置后可以辅助整理 JD、简历、截图文字、录音转写和面试复盘。
+
+## 快速开始
+
+第一次使用前，在项目目录安装依赖：
+
+```powershell
+cd C:\Users\你的用户名\jobpilot-demo
+npm.cmd install
+```
+
+日常使用时，启动本地服务：
+
+```powershell
+cd C:\Users\你的用户名\jobpilot-demo
+npm.cmd run dev:local
+```
+
+然后在浏览器打开：
+
+```text
+http://127.0.0.1:5175/
+```
+
+页面右上角或顶部状态显示 `API ONLINE` 时，说明已经连接到本地数据库，新增和修改的数据会保存下来。
+
+用完后，在运行命令的终端按 `Ctrl+C` 停止服务。
+
+### 如果你不是 Windows 用户
+
+macOS 或 Linux 可以使用：
 
 ```bash
 npm install
 npm run dev:local
 ```
 
-Then open:
+## 推荐使用流程
+
+### 1. 先上传简历版本
+
+第一次使用时，建议先进入 `简历版本`，上传你准备投递的简历。
+
+如果你有多个方向，可以分别上传不同版本，例如：
+
+- 前端实习版
+- 数据分析版
+- 产品/策略版
+
+每份简历可以记录适合方向、核心卖点和文件摘要。后面新增岗位时，就可以直接选择要使用的简历版本。
+
+### 2. 设置本周计划
+
+进入 `本周计划`，设置本周想投递的目标数量，也可以添加本周重点方向、城市、公司和练习任务。
+
+先定好本周目标后，后面新增岗位和安排行动会更有方向。首页也会根据本周目标和当前岗位进度告诉你还差多少投递，以及今天优先推进什么。
+
+### 3. 添加岗位
+
+进入 `岗位推进`，点击新增岗位。你可以上传 JD 文件、截图，或粘贴岗位描述。
+
+一个岗位建议至少补齐：
+
+- 公司和岗位名称
+- 城市
+- 主观优先级
+- 匹配度
+- 截止日期
+- 下一步动作
+- 使用简历
+
+岗位会按照优先级、匹配度和截止时间管理。岗位选择某份简历后，这份简历详情里也会显示它关联的岗位。
+
+### 4. 复盘面试
+
+进入 `面试复盘`，可以导入已经整理好的复盘文档，也可以粘贴原始面试文字稿。
+
+复盘内容建议包含：
+
+- 面试问题
+- 你的原回答
+- 回答评价
+- 优化框架
+- 优化后的回答
+
+需要长期练习的问题，可以生成答案卡，或加入本周计划。
+
+### 5. 建立答案库
+
+进入 `答案库`，保存高频问题和可复用回答，例如项目经历、职业动机、技术选型、业务分析等。
+
+答案卡本身不会直接出现在今日行动里。把它加入本周计划后，才会变成需要练习的行动。
+
+### 6. 看今日行动
+
+进入 `今日行动`，JobPilot 会根据这些信息自动生成今天优先做的事：
+
+- 岗位当前阶段和下一步动作
+- 面试复盘里仍需处理的问题
+- 本周计划中未完成的任务
+- 你设置的优先级和投递目标
+
+今日行动不是手动待办清单。你只需要维护好岗位、面试复盘和本周计划，它会自动汇总。
+
+## 数据保存在哪里
+
+真实数据默认保存在本机：
+
+- 数据库：`server/data/jobpilot.local.sqlite`
+- 上传文件：`server/data/files/`
+- 本地配置：`.env` 或 `.env.local`
+
+这些文件不会自动上传到 GitHub。请不要手动把 `server/data`、`.env`、`.env.local` 发给别人。
+
+## 备份和恢复
+
+进入 `设置备份`：
+
+- `备份全部数据`：导出一份 JSON 备份文件。
+- `恢复备份`：从之前导出的备份文件恢复数据。
+- `导出答案卡`：导出便于复习的答案材料。
+- `导出面试复盘`：导出问题、评价和优化回答。
+
+建议在大规模清理数据、换电脑或升级项目前先导出备份。
+
+## 智能整理设置
+
+JobPilot 默认可以做基础整理，不配置 AI 也能使用。
+
+如果你想让它辅助整理 JD、简历、截图 OCR、录音转写或面试复盘，可以进入 `设置备份` 里的智能整理区域，配置服务商和 API Key。
+
+常见模式：
+
+- `基础整理`：本地规则整理，不需要 API Key。
+- `智能整理`：调用你配置的 AI 服务，适合更复杂的 JD、简历和面试内容。
+- `录音转写`：只影响音频文件，需要支持转写的服务。
+
+如果智能整理失败，页面会显示错误原因，你可以改用粘贴文字或基础整理继续使用。
+
+## 常见问题
+
+### PowerShell 提示禁止运行脚本怎么办
+
+如果 Windows PowerShell 运行 `npm run dev:local` 报错：
 
 ```text
-http://127.0.0.1:5175/
+无法加载文件 C:\Program Files\nodejs\npm.ps1，因为在此系统上禁止运行脚本
 ```
 
-`dev:local` starts both the local API and the Vite frontend. Your real data is stored locally:
+请改用：
 
-- SQLite database: `server/data/jobpilot.local.sqlite`
-- Uploaded files: `server/data/files/`
-- Local env/config files: `.env`, `.env.local`
-
-These local data/config paths are git-ignored and should not be deployed.
-
-## Public Demo
-
-The public demo is mock-only and safe to share. It does not connect to the local API and does not include your SQLite or uploaded files.
-
-```bash
-npm run demo:check
+```powershell
+npm.cmd run dev:local
 ```
 
-This builds the static demo and scans `dist` for local API URLs, SQLite names, `server/data`, and sensitive env variable names. GitHub Pages deployment also runs this command.
+这是 Windows 执行策略限制，不是 JobPilot 的问题。
 
-## Full MVP Check
+### 页面显示 API OFFLINE 怎么办
 
-Before handing off or deploying, run:
+确认本地服务是否正在运行：
 
-```bash
-npm run mvp:check
+```powershell
+cd C:\Users\你的用户名\jobpilot-demo
+npm.cmd run dev:local
 ```
 
-This runs:
+启动成功后刷新页面，顶部应显示 `API ONLINE`。
 
-- local build
-- public demo safety check
-- API smoke check against a temporary SQLite database
-- API restart persistence check
-- frontend UI audits against a temporary API + Vite app
-- diff whitespace check
+### 为什么第一次打开会有示例数据
 
-## What Is Already Connected
+项目首次启动时可能会生成一批示例岗位、简历和面试复盘，方便你了解功能。
 
-- Frontend can hydrate from the local API.
-- Local API persists to SQLite.
-- Uploaded files persist under local file storage.
-- Opportunities, interviews, QA pairs, answer cards, resume versions, training tasks, Today Todo, backup/restore, file upload, and parse APIs have API coverage.
-- Parse APIs use deterministic local parsing by default, can extract text locally from stored `.txt`, `.md`, text-based `.pdf`, and `.docx` files, and can optionally call an AI provider for text parsing, screenshot OCR, and audio transcription when Assist mode and an API key are configured.
-- Interview review in Local parse mode works without AI: local transcript splitting + manual confirm/create.
-- Interview review in Assist parse mode uses a two-stage AI flow: extract Q/A from transcript, then generate per-question critique/framework/sample answer.
-- Composer upload state now shows whether files are reading, stored, ready to parse, or blocked by extraction/OCR/transcription requirements.
-- Top bar shows API mode/health (`API ONLINE`, `API OFFLINE`, `PUBLIC DEMO`, `LOCAL MOCK`).
-- API restart persistence is verified by `npm run api:check:persistence`.
+你可以在页面里逐条删除示例数据，然后添加自己的真实记录。建议删除前先在 `设置备份` 中导出备份。
 
-## Assist vs Local
+### 能不能多设备同步
 
-Settings has two toggles:
+当前版本是本地优先工具，不提供账号、云数据库或多设备同步。换电脑时建议使用 `备份全部数据` 和 `恢复备份`。
 
-- **文字 / JD / 简历解析**: Local = rule-based parsing; Assist = AI parsing and interview text review.
-- **录音转写**: only affects audio files without pasted transcript.
+### 能不能直接部署给别人用
 
-If interview Assist fails, the UI shows the real error and does not silently fall back to old rule-based review content.
+可以做公开演示，但公开演示应只使用 mock 数据，不要连接你的本地数据库，也不要包含真实简历、录音、截图或 API Key。
 
-## Still Out Of Scope
+## 日常使用一句话总结
 
-- Old binary `.doc` extraction.
-- Cloud-hosted OCR/transcription without user-provided provider configuration.
-- Guaranteed high-quality AI parsing before testing with real user samples.
-- Reliable long-transcript interview review on every provider/model without tuning or chunking.
-- User accounts/auth.
-- Cloud database or multi-device sync.
-- Public demo API with shared persistence.
-
-Keep the current MVP local-first until the personal-use loop is stable.
+每天先打开 `今日行动`，按系统给出的优先级推进；新增岗位、上传简历、复盘面试和整理答案，都回到对应模块维护。只要基础数据维护好，JobPilot 就会帮你把求职行动串起来。
