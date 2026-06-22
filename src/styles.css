@@ -2152,8 +2152,7 @@ small {
 }
 
 .opportunity-scope-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: end;
   gap: 16px;
 }
@@ -2162,7 +2161,8 @@ small {
   min-width: 0;
   display: flex;
   align-items: end;
-  gap: 22px;
+  gap: 18px;
+  flex-wrap: wrap;
 }
 
 .opportunity-scope-tab,
@@ -2210,11 +2210,18 @@ small {
 }
 
 .opportunity-ended-link {
-  justify-self: end;
   font-family: "Space Mono", "JetBrains Mono", monospace;
   font-size: 11px;
-  opacity: 0.72;
+  opacity: 0.58;
   white-space: nowrap;
+}
+
+.opportunity-scope-divider {
+  align-self: center;
+  padding-bottom: 9px;
+  color: var(--text-disabled);
+  font-size: 16px;
+  line-height: 1;
 }
 
 .opportunity-ended-link:hover,

@@ -3522,16 +3522,17 @@ function App() {
                           {item.label}
                         </button>
                       ))}
+                      <span className="opportunity-scope-divider" aria-hidden="true">·</span>
+                      <button
+                        className={`opportunity-ended-link ${opportunityVisibility === "ENDED" ? "active-ended-link" : ""}`}
+                        onClick={() => {
+                          setOpportunityVisibility(opportunityVisibility === "ENDED" ? "ACTIVE" : "ENDED");
+                          setOpportunityPage(0);
+                        }}
+                      >
+                        {opportunityVisibility === "ENDED" ? "查看推进中" : "已结束记录"}
+                      </button>
                     </div>
-                    <button
-                      className={`opportunity-ended-link ${opportunityVisibility === "ENDED" ? "active-ended-link" : ""}`}
-                      onClick={() => {
-                        setOpportunityVisibility(opportunityVisibility === "ENDED" ? "ACTIVE" : "ENDED");
-                        setOpportunityPage(0);
-                      }}
-                    >
-                      {opportunityVisibility === "ENDED" ? "查看推进中" : "查看已结束记录"}
-                    </button>
                   </div>
                   <div className="filter-bar opportunity-filter-bar" aria-label="岗位筛选">
                     {opportunityPriorityOptions.map((item) => (
