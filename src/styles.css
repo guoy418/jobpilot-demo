@@ -3974,6 +3974,59 @@ small {
   border-top: 1px solid var(--border);
 }
 
+.restore-preview {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--priority-p1) 34%, var(--border-visible));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--priority-p1) 8%, var(--surface));
+}
+
+.restore-preview.restore-preview-error {
+  border-color: color-mix(in srgb, var(--priority-p0) 42%, var(--border-visible));
+  background: color-mix(in srgb, var(--priority-p0) 8%, var(--surface));
+}
+
+.restore-preview .section-title {
+  margin-bottom: 0;
+}
+
+.restore-preview > p {
+  max-width: 760px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.restore-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.restore-preview-grid div {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+}
+
+.restore-preview-grid span {
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.restore-preview-grid strong {
+  color: var(--text-display);
+  font-size: 28px;
+  line-height: 1;
+}
+
 .settings-panel > p {
   max-width: 760px;
   color: var(--text-secondary);
@@ -4776,6 +4829,7 @@ small {
   .instrument-panel,
   .card-grid,
   .settings-grid,
+  .restore-preview-grid,
   .guide-steps,
   .interview-card-grid,
   .interview-tabs,
@@ -4915,6 +4969,7 @@ small {
   .today-card-list,
   .card-grid,
   .settings-grid,
+  .restore-preview-grid,
   .guide-steps,
   .interview-card-grid,
   .interview-tabs,

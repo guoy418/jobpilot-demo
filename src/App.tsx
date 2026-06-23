@@ -16,17 +16,13 @@ import {
   KanbanSquare,
   Library,
   Moon,
-  Pencil,
-  PanelRight,
   Plus,
   RotateCcw,
   Search,
-  Sparkles,
   Sun,
-  Trash2,
   Upload,
 } from "lucide-react";
-import { type CSSProperties, type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiModeBadge,
   EmptyState,
@@ -56,6 +52,7 @@ import { useDismissedTodayActions } from "./hooks/useDismissedTodayActions";
 import { useModuleComposerController } from "./hooks/useModuleComposerController";
 import { useThemePreference } from "./hooks/useThemePreference";
 import { useWeeklyPlanController } from "./hooks/useWeeklyPlanController";
+import { AnswersPage, type AnswerCategoryEditorState, type AnswerUpdateField } from "./pages/AnswersPage";
 import { isGarbledTextContent } from "./textEncoding";
 import {
   computeOpportunityAction,
@@ -118,7 +115,19 @@ import { apiBaseUrl, isApiEnabled, isPublicDemo } from "./appConfig";
 import { baseAnswerCards, baseAnswerCategories, baseWeeklyPlan, resumeVersions, seedInterviewSessions, seedOpportunities, uncategorizedAnswerCategoryId } from "./mockData";
 import { selectDashboardSummary, selectResumeName, selectTodayActions, type TodayAction } from "./selectors";
 import { formatDueDateDisplay, localDateKey as todayDateKey } from "./utils/date";
+import { BACKUP_SCHEMA_VERSION } from "./utils/backup";
 import { extractionStatusLabel, failedExtractionStatuses } from "./utils/composerSource";
+import {
+  composerValidationMessage,
+  formatComposerApiError,
+  getComposerAssistRequirement as composerAssistRequirement,
+  isComposerAiProviderConfigured as isAiProviderConfigured,
+  validateAnswerComposerDraft,
+  validateInterviewComposerDraft,
+  validateOpportunityComposerDraft,
+  validateResumeComposerDraft,
+  type ComposerValidationResult,
+} from "./utils/composerValidation";
 import { formatOpportunityHistory, historyTimelinePlaceholder, parseOpportunityHistory } from "./utils/opportunityHistory";
 import { GRID_PAGE_SIZE, OPPORTUNITY_TABLE_PAGE_SIZE, paginateList } from "./utils/pagination";
 import {
@@ -215,18 +224,6 @@ type OpportunityVisibilityFilter = "ACTIVE" | "ENDED" | "ALL";
 type OpportunityPriorityFilter = "ALL" | OpportunityAction;
 type OpportunityTagFilter = "HIGH_PRIORITY" | "HIGH_MATCH" | "DUE_SOON";
 
-type AnswerCategoryEditorState =
-  | {
-      mode: "create";
-      parentId: string;
-      name: string;
-    }
-  | {
-      mode: "rename";
-      categoryId: string;
-      name: string;
-    };
-
 const allAnswerCategoryId = "all";
 
 const endReasonLabel: Record<OpportunityEndReason, string> = {
@@ -299,43 +296,12 @@ const getInterviewTranscriptText = (session: InterviewSession) => {
   return fallbackFile?.content?.trim() ?? "";
 };
 
-const fetchErrorHint = (message: string) => {
-  if (/failed to fetch|networkerror|load failed/i.test(message)) {
-    return "无法连接本地 API（127.0.0.1:8787）。请确认终端里 npm run dev:local 正在运行，然后刷新页面重试。";
-  }
-  return message;
-};
-
-const isAiProviderConfigured = (settings: AiSettings) => settings.provider !== "none" && Boolean(settings.apiKey.trim());
-
 const shouldSendAiSettings = (settings: AiSettings, sourceKind: ModuleComposerSource["sourceKind"], useAssist: boolean) => {
   if (!isAiProviderConfigured(settings)) return false;
   if (useAssist) return true;
   if (sourceKind === "screenshot") return settings.parseMode === "assist";
   if (sourceKind === "audio") return settings.transcriptionMode === "assist";
   return false;
-};
-
-const composerAssistRequirement = (composer: ModuleComposer, sourceKind: ModuleComposerSource["sourceKind"], settings: AiSettings) => {
-  if (composer === "interview" && sourceKind === "audio" && settings.transcriptionMode !== "assist") {
-    return "录音需要先在设置里开启「录音转文字」";
-  }
-  if (sourceKind === "screenshot" && settings.parseMode !== "assist") {
-    return "截图识别需要先在设置里开启「智能整理」";
-  }
-  if ((sourceKind === "screenshot" || (composer === "interview" && sourceKind === "audio")) && !isAiProviderConfigured(settings)) {
-    return "请先在设置里完成智能整理配置";
-  }
-  if (composer === "interview" && sourceKind === "audio" && settings.provider === "anthropic") {
-    return "录音转写目前不支持 Anthropic，请改用 OpenAI 或自定义 OpenAI 兼容接口";
-  }
-  if (sourceKind === "screenshot" && settings.provider === "custom" && /api\.example\.com/i.test(settings.endpoint)) {
-    return "服务地址还是示例地址，请换成真实地址";
-  }
-  if (sourceKind === "screenshot" && settings.provider === "custom" && settings.endpoint.includes("deepseek.com")) {
-    return "当前服务不能直接识别截图，请改用支持图片识别的服务，或直接粘贴文字";
-  }
-  return "";
 };
 
 const timelineWithSyncedNextEvent = (
@@ -1034,7 +1000,7 @@ function App() {
         setSystemMessage("内容已整理");
         return;
       } catch (error) {
-        const errorDetail = fetchErrorHint(error instanceof Error ? error.message : String(error || ""));
+        const errorDetail = formatComposerApiError(error instanceof Error ? error.message : String(error || ""));
         if (composer === "interview" && sendAiSettings) {
           blockParseWithNotice(
             "ai-parser-failed",
@@ -1237,7 +1203,7 @@ function App() {
       setInterviewReparseNotice(`已重新整理 ${nextPairs.length} 个问题。`);
       setSystemMessage("面试已重新整理");
     } catch (error) {
-      const errorDetail = fetchErrorHint(error instanceof Error ? error.message : String(error || ""));
+      const errorDetail = formatComposerApiError(error instanceof Error ? error.message : String(error || ""));
       setInterviewReparseNotice(errorDetail ? `重新整理失败：${errorDetail}` : "重新整理失败，请稍后重试。");
       setSystemMessage("重新整理失败");
     } finally {
@@ -1662,7 +1628,7 @@ function App() {
     });
   };
 
-  const updateSelectedAnswer = (field: keyof Pick<AnswerCard, "question" | "type" | "framework" | "answer" | "relatedRoles" | "practiceStatus" | "status" | "categoryId">, value: string) => {
+  const updateSelectedAnswer = (field: AnswerUpdateField, value: string) => {
     const patch = { [field]: value } as Partial<AnswerCard>;
     setAnswerCards((cards) => cards.map((card) => (card.id === selectedAnswer.id ? { ...card, [field]: value } : card)));
     if (field === "status" || field === "practiceStatus") invalidateApiInsights();
@@ -1765,7 +1731,7 @@ function App() {
   };
 
   const buildLocalBackup = (): JobPilotBackup => ({
-      schemaVersion: "jobpilot-v0.7.2",
+      schemaVersion: BACKUP_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       source: isPublicDemo ? "public-demo" : isApiEnabled ? "local-api" : "local-mock",
       opportunities,
@@ -1795,24 +1761,16 @@ function App() {
       });
   };
 
-  const importBackupFromFile = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "application/json,.json";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      try {
-        const backup = JSON.parse(await file.text()) as JobPilotBackup;
-        const restoredBackup = isApiEnabled ? await importBackupApi(backup) : backup;
-        applyLoadedData(restoredBackup);
-        if (isApiEnabled) refreshApiInsights();
-        setSystemMessage("备份已恢复");
-      } catch {
-        setSystemMessage("备份恢复失败");
-      }
-    };
-    input.click();
+  const importBackup = async (backup: JobPilotBackup) => {
+    try {
+      const restoredBackup = isApiEnabled ? await importBackupApi(backup) : backup;
+      applyLoadedData(restoredBackup);
+      if (isApiEnabled) refreshApiInsights();
+      setSystemMessage("备份已恢复");
+    } catch (error) {
+      setSystemMessage("备份恢复失败，已有数据未被覆盖");
+      throw error;
+    }
   };
 
   const exportAnswerCards = () => {
@@ -1919,9 +1877,16 @@ function App() {
     });
   };
 
+  const blockInvalidComposerSubmit = (validation: ComposerValidationResult) => {
+    if (validation.ok) return true;
+    const message = composerValidationMessage(validation);
+    setComposerParseNotice(message);
+    setSystemMessage(validation.errors[0]?.message ?? "请检查表单");
+    return false;
+  };
+
   const createOpportunityDirect = () => {
-    if (!composerDraft.company.trim() || !composerDraft.title.trim() || !composerDraft.sourceText.trim()) {
-      setSystemMessage("请补齐公司、岗位和岗位描述");
+    if (!blockInvalidComposerSubmit(validateOpportunityComposerDraft(composerDraft, composerSource))) {
       return;
     }
 
@@ -1992,8 +1957,14 @@ function App() {
   };
 
   const createInterviewDirect = () => {
-    if (!composerDraft.company.trim() || !composerDraft.role.trim() || !composerDraft.round.trim()) {
-      setSystemMessage("请补齐公司、岗位和轮次");
+    if (
+      !blockInvalidComposerSubmit(
+        validateInterviewComposerDraft(composerDraft, composerSource, {
+          inputMode: interviewInputMode,
+          parsedQaPairCount: composerParsedQaPairs.length,
+        }),
+      )
+    ) {
       return;
     }
 
@@ -2025,12 +1996,6 @@ function App() {
         uploadedAt: now,
         content: hasUsableTranscript ? sourceText : undefined,
       });
-    }
-
-    if (interviewInputMode === "raw-transcript" && !composerParsedQaPairs.length) {
-      setSystemMessage("请先用智能整理生成复盘");
-      setComposerParseNotice("未整理的面试文稿需要先开启智能整理并生成复盘后，才能创建正式记录。");
-      return;
     }
 
     const parsedQaPairs = composerParsedQaPairs.length ? composerParsedQaPairs : hasUsableTranscript ? parseTranscriptQaPairs(sourceText) : [];
@@ -2085,20 +2050,7 @@ function App() {
   };
 
   const createResumeDirect = () => {
-    if (!composerDraft.title.trim() || !composerDraft.fileName.trim()) {
-      setSystemMessage("请补齐简历名称和文件");
-      return;
-    }
-    if (composerSource.uploadStatus === "reading" || composerSource.uploadStatus === "uploading") {
-      setSystemMessage("简历文件还在保存，请稍等完成后再创建");
-      return;
-    }
-    if (composerSource.uploadStatus === "failed") {
-      setSystemMessage("简历文件保存失败，请重新选择文件");
-      return;
-    }
-    if (isApiEnabled && !composerSource.storageUri) {
-      setSystemMessage("简历文件还没有保存到本地数据库，请重新选择文件");
+    if (!blockInvalidComposerSubmit(validateResumeComposerDraft(composerDraft, composerSource, { requireStoredFile: isApiEnabled }))) {
       return;
     }
 
@@ -2126,8 +2078,7 @@ function App() {
   };
 
   const createAnswerDirect = () => {
-    if (!composerDraft.question.trim()) {
-      setSystemMessage("请先填写问题");
+    if (!blockInvalidComposerSubmit(validateAnswerComposerDraft(composerDraft))) {
       return;
     }
 
@@ -2583,122 +2534,6 @@ function App() {
     }
 
     createLocalAnswerCard();
-  };
-
-  const renderAnswerCategoryEditor = (matches: boolean, depth: number) => {
-    if (!answerCategoryEditor || !matches) return null;
-    const label = answerCategoryEditor.mode === "create" ? "新增分类" : "重命名分类";
-    return (
-      <div className="answer-category-inline-editor" style={{ "--category-depth": depth } as CSSProperties}>
-        <span>{label}</span>
-        <input
-          autoFocus
-          value={answerCategoryEditor.name}
-          onChange={(event) => setAnswerCategoryEditor((editor) => (editor ? { ...editor, name: event.target.value } : editor))}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") commitAnswerCategoryEditor();
-            if (event.key === "Escape") setAnswerCategoryEditor(null);
-          }}
-          placeholder="分类名称"
-        />
-        <div>
-          <button className="primary-button compact-button" onClick={commitAnswerCategoryEditor}>
-            保存
-          </button>
-          <button className="ghost-button compact-button" onClick={() => setAnswerCategoryEditor(null)}>
-            取消
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  const renderAnswerCategoryTree = (category: AnswerCategory, depth = 0) => {
-    const children = answerCategoryChildren.get(category.id) ?? [];
-    const hasChildren = children.length > 0;
-    const expanded = expandedAnswerCategoryIds.has(category.id);
-    const active = !isAllAnswerCategorySelected && selectedAnswerCategory.id === category.id;
-    const dropTarget = answerCategoryDropTargetId === category.id;
-    const FolderIcon = hasChildren && expanded ? FolderOpen : Folder;
-
-    return (
-      <div key={category.id} className="answer-category-node">
-        <div
-          className={`answer-category-row ${active ? "active" : ""} ${dropTarget ? "drop-target" : ""}`}
-          style={{ "--category-depth": depth } as CSSProperties}
-          onDragOver={(event) => handleAnswerCategoryDragOver(event, category.id)}
-          onDragLeave={(event) => handleAnswerCategoryDragLeave(event, category.id)}
-          onDrop={(event) => handleAnswerCategoryDrop(event, category.id)}
-        >
-          <button
-            className="answer-category-toggle"
-            onClick={() => hasChildren && toggleAnswerCategoryExpanded(category.id)}
-            disabled={!hasChildren}
-            aria-label={expanded ? "收起分类" : "展开分类"}
-          >
-            {hasChildren ? expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
-          </button>
-          <button
-            className="answer-category-main"
-            aria-current={active ? "true" : undefined}
-            onClick={() => {
-              setSelectedAnswerCategoryId(category.id);
-              setOpenAnswerCategoryMenuId("");
-              setAnswerPage(0);
-              setAnswerView("list");
-            }}
-            title="拖入答案卡可移动到此分类"
-          >
-            <FolderIcon size={16} />
-            <span>{category.name}</span>
-            {category.system ? <em>系统</em> : null}
-          </button>
-          {!category.system ? (
-            <div className="answer-category-actions">
-              <button className="answer-category-icon-action" onClick={() => openCreateAnswerCategoryEditor(category.id)} aria-label={`在${category.name}下新增子分类`}>
-                <Plus size={13} />
-              </button>
-              <div className="answer-category-menu-wrap">
-                <button
-                  className="answer-category-icon-action"
-                  onClick={() => setOpenAnswerCategoryMenuId((id) => (id === category.id ? "" : category.id))}
-                  aria-label={`${category.name}更多操作`}
-                  aria-expanded={openAnswerCategoryMenuId === category.id}
-                >
-                  ⋮
-                </button>
-                {openAnswerCategoryMenuId === category.id ? (
-                  <div className="answer-category-menu">
-                    <button onClick={() => openRenameAnswerCategoryEditor(category)}>
-                      <Pencil size={13} />
-                      <span>重命名</span>
-                    </button>
-                    <button
-                      className="answer-category-menu-danger"
-                      onClick={() => {
-                        setOpenAnswerCategoryMenuId("");
-                        requestConfirm({
-                          title: "删除这个分类？",
-                          description: `「${category.name}」及其子分类会被删除，里面的答案卡会移动到「尚未归类」。`,
-                          confirmLabel: "删除分类",
-                          onConfirm: () => deleteAnswerCategory(category),
-                        });
-                      }}
-                    >
-                      <Trash2 size={13} />
-                      <span>删除</span>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
-        {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "rename" && answerCategoryEditor.categoryId === category.id, depth)}
-        {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "create" && answerCategoryEditor.parentId === category.id, depth + 1)}
-        {hasChildren && expanded ? children.map((child) => renderAnswerCategoryTree(child, depth + 1)) : null}
-      </div>
-    );
   };
 
   return (
@@ -3607,221 +3442,85 @@ function App() {
         )}
 
         {page === "answers" && (
-          <section className={`answer-workspace ${answerCategorySidebarCollapsed ? "answer-workspace-collapsed" : ""}`}>
-            {!answerCategorySidebarCollapsed ? (
-              <div className="surface answer-category-pane">
-                <div className="answer-category-header">
-                  <SectionTitle label="分类" title="答案文件夹" action={`${answerCategories.length} 个`} />
-                  <button className="answer-category-icon-action" onClick={() => setAnswerCategorySidebarCollapsed(true)} aria-label="收起分类侧栏">
-                    <PanelRight size={15} />
-                  </button>
-                </div>
-                <div className="answer-category-tree">
-                  <div className={`answer-category-row answer-category-all-row ${isAllAnswerCategorySelected ? "active" : ""}`}>
-                    <span className="answer-category-toggle" />
-                    <button
-                      className="answer-category-main"
-                      aria-current={isAllAnswerCategorySelected ? "true" : undefined}
-                      onClick={() => {
-                        setSelectedAnswerCategoryId(allAnswerCategoryId);
-                        setOpenAnswerCategoryMenuId("");
-                        setAnswerPage(0);
-                        setAnswerView("list");
-                      }}
-                    >
-                      <Library size={16} />
-                      <span>全部答案</span>
-                      <strong>{answerCards.length}</strong>
-                    </button>
-                    <div className="answer-category-actions">
-                      <button className="answer-category-icon-action" onClick={() => openCreateAnswerCategoryEditor()} aria-label="新增顶层分类">
-                        <Plus size={13} />
-                      </button>
-                    </div>
-                  </div>
-                  {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "create" && answerCategoryEditor.parentId === "", 0)}
-                  {rootAnswerCategories.map((category) => renderAnswerCategoryTree(category))}
-                </div>
-              </div>
-            ) : null}
-            {answerView === "list" ? (
-              <div className="surface answer-list-pane answer-home-pane paginated-pane">
-                <div className="paginated-pane-header">
-                  {answerCategorySidebarCollapsed ? (
-                    <button className="secondary-button compact-button answer-category-reopen" onClick={() => setAnswerCategorySidebarCollapsed(false)}>
-                      <PanelRight size={14} />
-                      <span>显示分类</span>
-                    </button>
-                  ) : null}
-                  <PageIntro
-                    label={selectedAnswerCategoryLabel}
-                    title="沉淀可复用回答"
-                    detail="答案卡可以手动添加，也可以从面试复盘生成；可随机抽练，或加入本周计划形成练习行动。"
-                    action={`${filteredAnswerCards.length}/${selectedAnswerCategoryTotal} 张卡片`}
-                  />
-                  <div className="button-row tight-row">
-                    <button className="primary-button" onClick={() => openComposer("answer")}>
-                      <Plus size={16} />
-                      <span>新增答案卡</span>
-                    </button>
-                    <button className="secondary-button answer-random-button" onClick={startRandomAnswerPractice} disabled={randomPracticeSpinning || filteredAnswerCards.length === 0}>
-                      <Sparkles size={16} />
-                      <span>{randomPracticeSpinning ? "抽取中..." : "随机抽练"}</span>
-                    </button>
-                    <button className="secondary-button" onClick={() => goTo("interviews")}>
-                      <FileAudio size={16} />
-                      <span>从复盘生成</span>
-                    </button>
-                  </div>
-                </div>
-                <div className="paginated-pane-body">
-                  {(randomPracticeCard || randomPracticeSpinning) && (
-                    <div className={`answer-practice-panel ${randomPracticeSpinning ? "is-shuffling" : ""}`}>
-                      <div className="answer-practice-deck" aria-hidden="true">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
-                      <div className="answer-practice-copy">
-                        <span className="eyebrow">临时练习</span>
-                        <h3>{randomPracticeSpinning ? "正在洗牌抽题..." : randomPracticeCard?.question}</h3>
-                        <p>
-                          {randomPracticeSpinning
-                            ? "从当前答案库里随机挑一张，不会加入本周计划。"
-                            : randomPracticeCard?.framework}
-                        </p>
-                      </div>
-                      {!randomPracticeSpinning && randomPracticeCard ? (
-                        <div className="answer-practice-actions">
-                          <button className="primary-button compact-button" onClick={toggleRandomPracticeReveal}>
-                            {randomPracticeReveal ? "收起答案" : "显示推荐回答"}
-                          </button>
-                          <button className="secondary-button compact-button" onClick={startRandomAnswerPractice}>
-                            换一张
-                          </button>
-                          <button className="ghost-button compact-button" onClick={() => openAnswerCard(randomPracticeCard.id)}>
-                            打开卡片
-                          </button>
-                        </div>
-                      ) : null}
-                      {!randomPracticeSpinning && randomPracticeCard && randomPracticeReveal ? (
-                        <div className="answer-practice-answer">
-                          {randomPracticeCard.answer}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                  <div className="answer-list paginated-pane-content">
-                    {filteredAnswerCards.length === 0 ? (
-                      <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
-                    ) : (
-                      visibleAnswerCards.map((card) => (
-                        <button
-                          className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""} ${draggedAnswerCardId === card.id ? "is-dragging" : ""}`}
-                          key={card.id}
-                          draggable
-                          title="拖到左侧分类可移动"
-                          aria-label={`打开答案卡：${card.question}。可拖到左侧分类移动。`}
-                          onDragStart={(event) => handleAnswerCardDragStart(event, card)}
-                          onDragEnd={clearAnswerCardDragState}
-                          onClick={() => openAnswerCard(card.id)}
-                        >
-                          <div>
-                            <span className="type-pill">{card.type}</span>
-                            <h3>{card.question}</h3>
-                          </div>
-                          <small>{card.status === "DRAFT" ? "草稿" : "可复用"} / {card.practiceStatus}</small>
-                          <span className="answer-card-category">{answerCategoryById.get(resolveAnswerCategoryId(card))?.name ?? "尚未归类"}</span>
-                          <ChevronRight size={16} />
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-                <ListPager
-                  className="paginated-pane-footer"
-                  label="答案卡列表"
-                  page={safeAnswerPage}
-                  pageCount={answerPageCount}
-                  onPageChange={setAnswerPage}
-                />
-              </div>
-            ) : (
-              <div className="surface answer-editor answer-detail-pane">
-                <div className="interview-detail-nav interview-detail-nav-start">
-                  {answerCategorySidebarCollapsed ? (
-                    <button className="secondary-button compact-button answer-category-reopen" onClick={() => setAnswerCategorySidebarCollapsed(false)}>
-                      <PanelRight size={14} />
-                      <span>显示分类</span>
-                    </button>
-                  ) : null}
-                  <button className="ghost-button compact-button" onClick={() => setAnswerView("list")}>
-                    <ChevronLeft size={14} />
-                    <span>返回{selectedAnswerCategoryLabel}</span>
-                  </button>
-                </div>
-                <SectionTitle
-                  label={`${selectedAnswer.source} / ${answerCategoryById.get(resolveAnswerCategoryId(selectedAnswer))?.name ?? "尚未归类"}`}
-                  title={selectedAnswer.question}
-                  action={selectedAnswer.status === "DRAFT" ? "草稿" : "可复用"}
-                />
-                <ReviewBlock label="问题" value={selectedAnswer.question} onChange={(value) => updateSelectedAnswer("question", value)} />
-                <ReviewBlock label="回答框架" value={selectedAnswer.framework} onChange={(value) => updateSelectedAnswer("framework", value)} />
-                <ReviewBlock label="推荐回答" value={selectedAnswer.answer} onChange={(value) => updateSelectedAnswer("answer", value)} />
-                <ReviewBlock label="适用岗位" value={selectedAnswer.relatedRoles} onChange={(value) => updateSelectedAnswer("relatedRoles", value)} />
-                <div className="inline-controls">
-                  <label>
-                    <span>卡片状态</span>
-                    <select value={selectedAnswer.status} onChange={(event) => updateSelectedAnswer("status", event.target.value)}>
-                      <option value="DRAFT">草稿</option>
-                      <option value="ACTIVE">可复用</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>练习状态</span>
-                    <select value={selectedAnswer.practiceStatus} onChange={(event) => updateSelectedAnswer("practiceStatus", event.target.value)}>
-                      <option value="薄弱">薄弱</option>
-                      <option value="中等">中等</option>
-                      <option value="熟练">熟练</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>移动到</span>
-                    <select value={resolveAnswerCategoryId(selectedAnswer)} onChange={(event) => updateSelectedAnswer("categoryId", event.target.value)}>
-                      {answerCategoryOptions.map(({ category, label }) => (
-                        <option key={category.id} value={category.id}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="button-row">
-                  <button className="secondary-button" onClick={addSelectedAnswerToPractice}>
-                    <ClipboardList size={16} />
-                    <span>加入本周计划</span>
-                  </button>
-                </div>
-
-                <div className="danger-zone">
-                  <span>危险操作</span>
-                  <button
-                    className="destructive-button"
-                    onClick={() =>
-                      requestConfirm({
-                        title: "删除这张答案卡？",
-                        description: `「${selectedAnswer.question}」删除后无法恢复。`,
-                        confirmLabel: "删除卡片",
-                        onConfirm: deleteSelectedAnswer,
-                      })
-                    }
-                  >
-                    删除当前卡
-                  </button>
-                </div>
-              </div>
-            )}
-          </section>
+          <AnswersPage
+            answerCards={answerCards}
+            answerCategories={answerCategories}
+            rootAnswerCategories={rootAnswerCategories}
+            answerCategoryChildren={answerCategoryChildren}
+            answerCategoryById={answerCategoryById}
+            answerCategoryOptions={answerCategoryOptions}
+            answerCategoryEditor={answerCategoryEditor}
+            openAnswerCategoryMenuId={openAnswerCategoryMenuId}
+            expandedAnswerCategoryIds={expandedAnswerCategoryIds}
+            answerCategoryDropTargetId={answerCategoryDropTargetId}
+            answerCategorySidebarCollapsed={answerCategorySidebarCollapsed}
+            answerView={answerView}
+            selectedAnswer={selectedAnswer}
+            selectedAnswerCategory={selectedAnswerCategory}
+            selectedAnswerCategoryLabel={selectedAnswerCategoryLabel}
+            selectedAnswerCategoryTotal={selectedAnswerCategoryTotal}
+            isAllAnswerCategorySelected={isAllAnswerCategorySelected}
+            filteredAnswerCards={filteredAnswerCards}
+            visibleAnswerCards={visibleAnswerCards}
+            safeAnswerPage={safeAnswerPage}
+            answerPageCount={answerPageCount}
+            draggedAnswerCardId={draggedAnswerCardId}
+            randomPracticeCard={randomPracticeCard}
+            randomPracticeSpinning={randomPracticeSpinning}
+            randomPracticeReveal={randomPracticeReveal}
+            resolveAnswerCategoryId={resolveAnswerCategoryId}
+            onSelectAllCategory={() => {
+              setSelectedAnswerCategoryId(allAnswerCategoryId);
+              setOpenAnswerCategoryMenuId("");
+              setAnswerPage(0);
+              setAnswerView("list");
+            }}
+            onSelectCategory={(categoryId) => {
+              setSelectedAnswerCategoryId(categoryId);
+              setOpenAnswerCategoryMenuId("");
+              setAnswerPage(0);
+              setAnswerView("list");
+            }}
+            onCreateCategory={openCreateAnswerCategoryEditor}
+            onRenameCategory={openRenameAnswerCategoryEditor}
+            onDeleteCategoryRequest={(category) => {
+              setOpenAnswerCategoryMenuId("");
+              requestConfirm({
+                title: "删除这个分类？",
+                description: `「${category.name}」及其子分类会被删除，里面的答案卡会移动到「尚未归类」。`,
+                confirmLabel: "删除分类",
+                onConfirm: () => deleteAnswerCategory(category),
+              });
+            }}
+            onToggleCategoryExpanded={toggleAnswerCategoryExpanded}
+            onToggleCategoryMenu={(categoryId) => setOpenAnswerCategoryMenuId((id) => (id === categoryId ? "" : categoryId))}
+            onCategoryEditorNameChange={(name) => setAnswerCategoryEditor((editor) => (editor ? { ...editor, name } : editor))}
+            onCommitCategoryEditor={commitAnswerCategoryEditor}
+            onCancelCategoryEditor={() => setAnswerCategoryEditor(null)}
+            onAnswerCategoryDragOver={handleAnswerCategoryDragOver}
+            onAnswerCategoryDragLeave={handleAnswerCategoryDragLeave}
+            onAnswerCategoryDrop={handleAnswerCategoryDrop}
+            onAnswerCardDragStart={handleAnswerCardDragStart}
+            onAnswerCardDragEnd={clearAnswerCardDragState}
+            onSidebarCollapsedChange={setAnswerCategorySidebarCollapsed}
+            onOpenComposer={() => openComposer("answer")}
+            onStartRandomPractice={startRandomAnswerPractice}
+            onToggleRandomPracticeReveal={toggleRandomPracticeReveal}
+            onOpenAnswerCard={openAnswerCard}
+            onGoToInterviews={() => goTo("interviews")}
+            onAnswerPageChange={setAnswerPage}
+            onAnswerViewChange={setAnswerView}
+            onUpdateSelectedAnswer={updateSelectedAnswer}
+            onAddSelectedAnswerToPractice={addSelectedAnswerToPractice}
+            onDeleteSelectedAnswerRequest={() =>
+              requestConfirm({
+                title: "删除这张答案卡？",
+                description: `「${selectedAnswer.question}」删除后无法恢复。`,
+                confirmLabel: "删除卡片",
+                onConfirm: deleteSelectedAnswer,
+              })
+            }
+          />
         )}
 
         {page === "resumes" && (
@@ -3965,7 +3664,7 @@ function App() {
               setSystemMessage("设置已重置");
             }}
             onExportBackup={exportBackup}
-            onImportBackup={importBackupFromFile}
+            onImportBackup={importBackup}
             onExportAnswerCards={exportAnswerCards}
             onExportInterviewReviews={exportInterviewReviews}
           />
@@ -3987,12 +3686,18 @@ function App() {
             onBackdropMouseDown={markModalBackdropPointerStart}
             onBackdropClick={(event) => closeModalFromBackdropClick(event, closeComposer)}
             onInterviewInputModeChange={setInterviewInputMode}
-            onSourceChange={updateComposerSource}
+            onSourceChange={(field, value) => {
+              updateComposerSource(field, value);
+              if (composerParseNotice) setComposerParseNotice("");
+            }}
             onSourcePatch={patchComposerSource}
             onFileSelected={handleComposerFileSelected}
             onClearParseNotice={() => setComposerParseNotice("")}
             onTemplateCopied={() => setSystemMessage("整理模板已复制")}
-            onDraftChange={updateComposerDraft}
+            onDraftChange={(field, value) => {
+              updateComposerDraft(field, value);
+              if (composerParseNotice) setComposerParseNotice("");
+            }}
             onParse={runComposerParse}
             onSubmit={submitComposer}
             onBackToSource={() => setComposerStep("source")}

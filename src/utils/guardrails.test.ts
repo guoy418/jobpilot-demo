@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DashboardSummary, TodayAction } from "../selectors";
 import type { TimelineEvent, WeeklyTask } from "../types";
 import { formatDueDateDisplay, localDateKey } from "./date";
+import { BACKUP_SCHEMA_VERSION, getBackupRestorePreview, migrateBackupPayload } from "./backup";
 import { formatOpportunityHistory, parseOpportunityHistory } from "./opportunityHistory";
 import { paginateList, paginateWeeklyGroupTasks } from "./pagination";
 import { normalizeDashboardSummary, normalizeTodayActions, todayActionKey } from "./todayActions";
@@ -128,6 +129,87 @@ describe("today action utilities", () => {
       taskId: undefined,
     });
     expect(todayActionKey(action)).toBe("opportunity:opp-1");
+  });
+});
+
+describe("backup restore preview", () => {
+  const backup = {
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    exportedAt: "2026-06-23T00:00:00.000Z",
+    source: "test",
+    opportunities: [{ id: "OP-1" }],
+    resumeVersions: [{ id: "RV-1" }],
+    interviewSessions: [
+      { id: "INT-1", qaPairs: [] },
+      { id: "INT-2", qaPairs: [] },
+    ],
+    answerCards: [{ id: "AC-1" }, { id: "AC-2" }, { id: "AC-3" }],
+    answerCategories: [{ id: "CAT-1" }],
+    weeklyPlan: {
+      targetApplications: 3,
+      focusDirections: [],
+      focusCities: [],
+      focusCompanies: [],
+      practiceThemes: [],
+      tasks: [{ id: "WT-1" }, { id: "WT-2" }],
+    },
+    storedFiles: [],
+  };
+
+  it("passes the current backup version through migration unchanged", () => {
+    expect(migrateBackupPayload(backup)).toBe(backup);
+  });
+
+  it("summarizes restorable backup counts before applying", () => {
+    expect(getBackupRestorePreview(backup)).toMatchObject({
+      ok: true,
+      summary: {
+        opportunities: 1,
+        resumes: 1,
+        interviews: 2,
+        answerCards: 3,
+        weeklyTasks: 2,
+      },
+    });
+  });
+
+  it("previews a migrated legacy backup consistently", () => {
+    const legacyBackup = {
+      ...backup,
+      schemaVersion: "jobpilot-v0.7",
+      source: undefined,
+      exportedAt: undefined,
+      answerCategories: undefined,
+      answerCards: backup.answerCards.map((answer) => ({ ...answer, categoryId: undefined })),
+      weeklyPlan: {
+        ...backup.weeklyPlan,
+        focusCities: undefined,
+        focusCompanies: undefined,
+        practiceThemes: undefined,
+      },
+      storedFiles: undefined,
+    };
+
+    const preview = getBackupRestorePreview(legacyBackup);
+
+    expect(preview).toMatchObject({
+      ok: true,
+      summary: {
+        opportunities: 1,
+        resumes: 1,
+        interviews: 2,
+        answerCards: 3,
+        weeklyTasks: 2,
+      },
+    });
+    expect(preview.ok ? preview.backup.schemaVersion : "").toBe(BACKUP_SCHEMA_VERSION);
+    expect(preview.ok ? preview.backup.answerCategories.map((category) => category.id) : []).toContain("CAT-UNCATEGORIZED");
+  });
+
+  it("rejects unsupported schemas before previewing restore", () => {
+    expect(getBackupRestorePreview({ ...backup, schemaVersion: "jobpilot-v0.1" })).toMatchObject({
+      ok: false,
+    });
   });
 });
 

@@ -321,8 +321,9 @@ const server = http.createServer(async (req, res) => {
     return handleGet(req, res);
   } catch (error) {
     console.error(error);
-    return sendJson(res, 500, {
-      error: "internal_server_error",
+    const isBackupValidationError = error?.name === "BackupValidationError";
+    return sendJson(res, isBackupValidationError ? 400 : 500, {
+      error: isBackupValidationError ? "invalid_backup" : "internal_server_error",
       message: error instanceof Error ? error.message : String(error),
     });
   }

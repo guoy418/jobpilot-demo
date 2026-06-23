@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { BACKUP_SCHEMA_VERSION, validateBackupPayload } from "./backupValidation.mjs";
 
 const DATA_DIR = path.join(process.cwd(), "server", "data");
 const DB_PATH = process.env.JOBPILOT_DB_PATH || path.join(DATA_DIR, "jobpilot.local.sqlite");
@@ -1981,7 +1982,7 @@ export const createRepository = (db) => {
   };
 
   const createBackup = () => ({
-    schemaVersion: "jobpilot-v0.7.2",
+    schemaVersion: BACKUP_SCHEMA_VERSION,
     exportedAt: nowIso(),
     source: "local-api",
     opportunities: listOpportunities(),
@@ -1993,26 +1994,7 @@ export const createRepository = (db) => {
     storedFiles: listStoredFiles(),
   });
 
-  const parseBackupPayload = (backup) => {
-    const resumeVersions = assertArray(backup?.resumeVersions, "resumeVersions");
-    const opportunities = assertArray(backup?.opportunities, "opportunities");
-    const interviewSessions = assertArray(backup?.interviewSessions, "interviewSessions");
-    const answerCards = assertArray(backup?.answerCards, "answerCards");
-    const answerCategories = assertArray(backup?.answerCategories ?? defaultAnswerCategories, "answerCategories");
-    const storedFiles = assertArray(backup?.storedFiles ?? [], "storedFiles");
-    const weeklyPlan = backup?.weeklyPlan;
-    if (!weeklyPlan || typeof weeklyPlan !== "object") throw new Error("Backup field weeklyPlan must be an object");
-    return {
-      resumeVersions,
-      opportunities,
-      interviewSessions,
-      answerCards,
-      answerCategories,
-      storedFiles,
-      weeklyPlan,
-      weekStart: backup?.weekStart,
-    };
-  };
+  const parseBackupPayload = (backup) => validateBackupPayload(backup).data;
 
   const restoreBackupRows = (backupData) => {
     const { resumeVersions, opportunities, interviewSessions, answerCards, answerCategories, weeklyPlan, weekStart } = backupData;

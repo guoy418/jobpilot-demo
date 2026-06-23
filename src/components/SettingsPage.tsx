@@ -1,4 +1,7 @@
 import { Archive, FileDown, PanelRight, Settings, Upload } from "lucide-react";
+import { useRef, useState } from "react";
+import type { JobPilotBackup } from "../apiClient";
+import { getBackupRestorePreview, type BackupRestorePreview } from "../utils/backup";
 import { ExportAction, PageIntro, SectionTitle } from "./AppPrimitives";
 
 type AiSettingsShape = {
@@ -30,10 +33,51 @@ export function SettingsPage({
   onSaveSettings: () => void;
   onResetSettings: () => void;
   onExportBackup: () => void;
-  onImportBackup: () => void;
+  onImportBackup: (backup: JobPilotBackup) => Promise<void> | void;
   onExportAnswerCards: () => void;
   onExportInterviewReviews: () => void;
 }) {
+  const restoreInputRef = useRef<HTMLInputElement>(null);
+  const [restorePreview, setRestorePreview] = useState<(BackupRestorePreview & { fileName: string }) | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+
+  const openRestorePicker = () => {
+    if (restoreInputRef.current) restoreInputRef.current.value = "";
+    restoreInputRef.current?.click();
+  };
+
+  const handleRestoreFileSelected = async () => {
+    const file = restoreInputRef.current?.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      setRestorePreview({ ...getBackupRestorePreview(parsed), fileName: file.name });
+    } catch {
+      setRestorePreview({
+        ok: false,
+        error: "备份文件不是有效 JSON",
+        fileName: file.name,
+      });
+    }
+  };
+
+  const applyRestore = async () => {
+    if (!restorePreview?.ok) return;
+    setRestoreBusy(true);
+    try {
+      await onImportBackup(restorePreview.backup);
+      setRestorePreview(null);
+    } catch (error) {
+      setRestorePreview({
+        ok: false,
+        error: error instanceof Error ? error.message : "备份恢复失败，已有数据未被覆盖",
+        fileName: restorePreview.fileName,
+      });
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
+
   return (
     <section className="surface">
       <PageIntro
@@ -42,12 +86,65 @@ export function SettingsPage({
         detail="在这里备份数据、导出复习材料，也可以选择是否开启智能整理能力。"
         action={isPublicDemo ? "演示模式" : isApiEnabled ? "本地保存" : "浏览器保存"}
       />
+      <input ref={restoreInputRef} className="hidden-file-input" type="file" accept="application/json,.json" onChange={handleRestoreFileSelected} />
       <div className="settings-grid">
         <ExportAction icon={Archive} title="备份全部数据" detail="保存岗位、面试、答案和简历记录。" onClick={onExportBackup} />
-        <ExportAction icon={Upload} title="恢复备份" detail="从之前导出的备份文件恢复数据。" onClick={onImportBackup} />
+        <ExportAction icon={Upload} title="恢复备份" detail="先预览备份内容，确认后再覆盖当前数据。" onClick={openRestorePicker} />
         <ExportAction icon={FileDown} title="导出答案卡" detail="下载一份方便复习的材料。" onClick={onExportAnswerCards} />
         <ExportAction icon={PanelRight} title="导出面试复盘" detail="下载问题、复盘建议和优化回答。" onClick={onExportInterviewReviews} />
       </div>
+      {restorePreview ? (
+        <div className={`restore-preview ${restorePreview.ok ? "" : "restore-preview-error"}`}>
+          <SectionTitle label="恢复预览" title={restorePreview.ok ? "确认要覆盖当前数据？" : "备份无法恢复"} action={restorePreview.fileName} />
+          {restorePreview.ok ? (
+            <>
+              <p>恢复会替换当前岗位、面试、答案、简历和本周计划。请确认数量符合预期后再继续。</p>
+              <div className="restore-preview-grid">
+                <div>
+                  <span>岗位</span>
+                  <strong>{restorePreview.summary.opportunities}</strong>
+                </div>
+                <div>
+                  <span>简历</span>
+                  <strong>{restorePreview.summary.resumes}</strong>
+                </div>
+                <div>
+                  <span>面试</span>
+                  <strong>{restorePreview.summary.interviews}</strong>
+                </div>
+                <div>
+                  <span>答案卡</span>
+                  <strong>{restorePreview.summary.answerCards}</strong>
+                </div>
+                <div>
+                  <span>本周动作</span>
+                  <strong>{restorePreview.summary.weeklyTasks}</strong>
+                </div>
+              </div>
+              <div className="button-row">
+                <button className="destructive-button" disabled={restoreBusy} onClick={applyRestore}>
+                  {restoreBusy ? "恢复中" : "确认恢复"}
+                </button>
+                <button className="secondary-button" disabled={restoreBusy} onClick={() => setRestorePreview(null)}>
+                  取消
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p>{restorePreview.error}。当前数据不会被覆盖。</p>
+              <div className="button-row">
+                <button className="secondary-button" onClick={openRestorePicker}>
+                  重新选择
+                </button>
+                <button className="ghost-button" onClick={() => setRestorePreview(null)}>
+                  关闭
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
       <div className="settings-panel">
         <SectionTitle label="智能整理" title="让系统帮你读材料" action={aiSettings.provider === "none" ? "未开启" : "已配置"} />
         <p>默认可以直接读取文字文件。需要识别截图、转写录音或整理长文本时，可以在这里接入你自己的模型服务。</p>
