@@ -50,7 +50,7 @@ test("creates an opportunity from pasted JD text", async ({ page }) => {
 
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("heading", { name: "前端开发实习生" })).toBeVisible();
-  await expect(page.getByText("岗位已创建")).toBeVisible();
+  await expect(page.getByText("岗位职责：参与 React 组件开发和性能优化。")).toBeVisible();
 });
 
 test("shows validation when answer and resume composers are incomplete", async ({ page }) => {
