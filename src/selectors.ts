@@ -1,4 +1,4 @@
-import { computeOpportunityAction, resolveOpportunityAction, statusLabel, submittedStatuses } from "./domain";
+import { compareOpportunityActions, getWeeklyWindow, parseDateLike, resolveOpportunityAction, statusLabel, submittedStatuses } from "./domain";
 import type { AnswerCard, InterviewSession, Opportunity, OpportunityAction, Page, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
 export type TodayAction = {
@@ -30,55 +30,11 @@ export type DashboardSummary = {
 export const selectResumeName = (resumeList: ResumeVersion[], resumeId: string) =>
   resumeList.find((resume) => resume.id === resumeId)?.name ?? "未选择简历";
 
-const priorityOrder: Record<OpportunityAction, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
-const dayMs = 24 * 60 * 60 * 1000;
 const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 const resolveInterviewReviewPriority = (session: InterviewSession): OpportunityAction => session.reviewPriority ?? "P1";
 
 export const sortTodayActions = (actions: TodayAction[]): TodayAction[] =>
-  [...actions].sort((left, right) => priorityOrder[left.level] - priorityOrder[right.level]);
-
-const startOfDay = (date: Date) => {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-};
-
-const parseDateLike = (value = "", now = new Date()): Date | null => {
-  const text = value.trim();
-  if (!text || /^next$/i.test(text)) return null;
-  if (/^(now|today)$/i.test(text)) return now;
-
-  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
-
-  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
-  if (cnDateMatch) return new Date(now.getFullYear(), Number(cnDateMatch[1]) - 1, Number(cnDateMatch[2]));
-
-  const enMonthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
-  if (enMonthMatch) {
-    const monthIndex = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(enMonthMatch[1].slice(0, 3).toLowerCase());
-    if (monthIndex >= 0) return new Date(now.getFullYear(), monthIndex, Number(enMonthMatch[2]));
-  }
-
-  const parsedDate = new Date(text);
-  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
-};
-
-const getCurrentWeekStart = (now = new Date()) => {
-  const start = startOfDay(now);
-  const daysSinceMonday = (start.getDay() + 6) % 7;
-  start.setDate(start.getDate() - daysSinceMonday);
-  return start;
-};
-
-const getWeeklyWindow = (weeklyPlan: WeeklyPlan, now = new Date()) => {
-  const currentWeekStart = getCurrentWeekStart(now);
-  const planStart = weeklyPlan.weekStart ? startOfDay(parseDateLike(weeklyPlan.weekStart, now) ?? currentWeekStart) : currentWeekStart;
-  const planEnd = new Date(planStart.getTime() + 7 * dayMs);
-  const start = now >= planStart && now < planEnd ? planStart : currentWeekStart;
-  return { start, end: new Date(start.getTime() + 7 * dayMs) };
-};
+  [...actions].sort((left, right) => compareOpportunityActions(left.level, right.level));
 
 const getSubmittedAt = (opportunity: Opportunity, now = new Date()) => {
   const submittedEvents = opportunity.timeline

@@ -1,44 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  compareOpportunityActions,
+  computeOpportunityAction,
+  defaultOpportunityNextAction,
+  getRestorableOpportunityStatus,
+  getWeeklyWindow,
+  inferDueDateFromText,
+  opportunityActionValues,
+  opportunityStatusFlow,
+  opportunityStatusNextAction,
+  parseDateLike,
+  resolveOpportunityAction,
+  shouldAdvanceLinkedOpportunityAfterInterview,
+  statusLabel as opportunityStatusLabel,
+  submittedStatuses,
+} from "../shared/opportunityRules.mjs";
 import { BACKUP_SCHEMA_VERSION, validateBackupPayload } from "./backupValidation.mjs";
 
 const DATA_DIR = path.join(process.cwd(), "server", "data");
 const DB_PATH = process.env.JOBPILOT_DB_PATH || path.join(DATA_DIR, "jobpilot.local.sqlite");
 const FILE_DIR = process.env.JOBPILOT_FILE_DIR || path.join(DATA_DIR, "files");
-
-const submittedStatuses = ["APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
-const opportunityStatusFlow = ["TO APPLY", "APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
-const opportunityStatusAction = {
-  "TO APPLY": "P0",
-  APPLIED: "P1",
-  "WRITTEN TEST": "P1",
-  SCREENING: "P2",
-  INTERVIEWING: "P1",
-  WAITING: "P2",
-  OFFER: "P3",
-  ENDED: "P3",
-};
-const opportunityStatusLabel = {
-  "TO APPLY": "待投递",
-  APPLIED: "已投递",
-  "WRITTEN TEST": "准备笔试",
-  SCREENING: "筛选中",
-  INTERVIEWING: "准备面试",
-  WAITING: "等结果",
-  OFFER: "Offer",
-  ENDED: "已结束",
-};
-const opportunityStatusNextAction = {
-  "TO APPLY": "补齐材料后投递",
-  APPLIED: "三天后跟进投递结果",
-  "WRITTEN TEST": "完成笔试并同步结果",
-  SCREENING: "等待筛选结果",
-  INTERVIEWING: "准备下一轮面试",
-  WAITING: "等待结果并准备复盘",
-  OFFER: "整理 Offer 信息和取舍",
-  ENDED: "已结束，保留历史记录",
-};
 
 const UNCATEGORIZED_ANSWER_CATEGORY_ID = "CAT-UNCATEGORIZED";
 const defaultAnswerCategories = [
@@ -52,98 +35,8 @@ const defaultAnswerCategories = [
   { id: "CAT-INTERNSHIP-DETAILS", name: "业务理解/细节追问", parentId: "CAT-INTERNSHIP", sortOrder: 20, system: false },
 ];
 
-const dayMs = 24 * 60 * 60 * 1000;
 const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
-const actionPriorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
-const actionByRank = ["P0", "P1", "P2", "P3"];
-const actionPrioritySet = new Set(actionByRank);
-const baseActionRank = {
-  "TO APPLY": 1,
-  APPLIED: 1,
-  "WRITTEN TEST": 1,
-  SCREENING: 2,
-  INTERVIEWING: 1,
-  WAITING: 2,
-  OFFER: 3,
-  ENDED: 3,
-};
-
-const dateKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-const addDays = (days) => {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() + days);
-  return dateKey(date);
-};
-
-const inferDueDateFromText = (deadline = "") => {
-  const text = String(deadline).trim();
-  if (!text || text === "待定") return "";
-  if (/今晚|today|tonight/i.test(text)) return addDays(0);
-  if (/明天|tomorrow/i.test(text)) return addDays(1);
-  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")}`;
-  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
-  if (cnDateMatch) return `${new Date().getFullYear()}-${cnDateMatch[1].padStart(2, "0")}-${cnDateMatch[2].padStart(2, "0")}`;
-  const parsedDate = new Date(text);
-  return Number.isNaN(parsedDate.getTime()) ? "" : dateKey(parsedDate);
-};
-
-const getOpportunityDueDate = (opportunity) => opportunity.dueDate || inferDueDateFromText(opportunity.deadline);
-
-const getOpportunityDaysUntilDue = (opportunity) => {
-  const dueDate = getOpportunityDueDate(opportunity);
-  if (!dueDate) return null;
-  const due = new Date(`${dueDate}T00:00:00`);
-  if (Number.isNaN(due.getTime())) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return Math.ceil((due.getTime() - today.getTime()) / dayMs);
-};
-
-const startOfDay = (date) => {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-};
-
-const parseDateLike = (value = "", now = new Date()) => {
-  const text = String(value).trim();
-  if (!text || /^next$/i.test(text)) return null;
-  if (/^(now|today)$/i.test(text)) return now;
-  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
-  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
-  if (cnDateMatch) return new Date(now.getFullYear(), Number(cnDateMatch[1]) - 1, Number(cnDateMatch[2]));
-  const enMonthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
-  if (enMonthMatch) {
-    const monthIndex = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(enMonthMatch[1].slice(0, 3).toLowerCase());
-    if (monthIndex >= 0) return new Date(now.getFullYear(), monthIndex, Number(enMonthMatch[2]));
-  }
-  const parsedDate = new Date(text);
-  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
-};
-
-const getCurrentWeekStart = (now = new Date()) => {
-  const start = startOfDay(now);
-  const daysSinceMonday = (start.getDay() + 6) % 7;
-  start.setDate(start.getDate() - daysSinceMonday);
-  return start;
-};
-
-const getWeeklyWindow = (weeklyPlan, now = new Date()) => {
-  const currentWeekStart = getCurrentWeekStart(now);
-  const planStart = weeklyPlan?.weekStart ? startOfDay(parseDateLike(weeklyPlan.weekStart, now) ?? currentWeekStart) : currentWeekStart;
-  const planEnd = new Date(planStart.getTime() + 7 * dayMs);
-  const start = now >= planStart && now < planEnd ? planStart : currentWeekStart;
-  return { start, end: new Date(start.getTime() + 7 * dayMs) };
-};
+const actionPrioritySet = new Set(opportunityActionValues);
 
 const getSubmittedAt = (opportunity, now = new Date()) => {
   const submittedEvents = opportunity.timeline
@@ -168,41 +61,9 @@ const selectWeeklySubmittedApplications = (opportunities, weeklyPlan) => {
   }).length;
 };
 
-const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match = "MEDIUM", priority = "B" }) => {
-  if (status === "ENDED") return "P3";
-  if (status === "OFFER") return "P3";
-  const daysUntilDue = getOpportunityDaysUntilDue({ deadline, dueDate });
-  let rank = baseActionRank[status] ?? actionPriorityRank.P2;
-  if (daysUntilDue !== null) {
-    if (daysUntilDue <= 1) rank = 0;
-    else if (daysUntilDue <= 3 && status !== "WAITING") rank = Math.min(rank, 1);
-    else if (daysUntilDue <= 7 && status === "TO APPLY") rank = Math.min(rank, 1);
-  }
-  if (status === "TO APPLY" && priority === "A" && match === "HIGH") rank = Math.min(rank, 0);
-  else if (priority === "A" && status !== "WAITING") rank = Math.min(rank, 1);
-  if (daysUntilDue === null && priority === "C" && match === "LOW" && status === "TO APPLY") rank = Math.max(rank, 2);
-  return actionByRank[Math.max(0, Math.min(3, rank))];
-};
-
-const defaultOpportunityNextAction = (status) => opportunityStatusNextAction[status] || opportunityStatusNextAction["TO APPLY"];
-
-const getRestorableOpportunityStatus = (opportunity, hasLinkedInterviews = false) => {
-  if (opportunity.previousStatus && opportunity.previousStatus !== "ENDED") return opportunity.previousStatus;
-  if (opportunity.status !== "ENDED") return opportunity.status;
-  return hasLinkedInterviews ? "WAITING" : "APPLIED";
-};
-
-const shouldAdvanceLinkedOpportunityAfterInterview = (status) => status === "INTERVIEWING";
-
-const resolveOpportunityAction = (opportunity) => {
-  if (opportunity.status === "ENDED") return "P3";
-  if (opportunity.actionManual && opportunity.action) return opportunity.action;
-  return computeOpportunityAction(opportunity);
-};
-
 const normalizeOpportunityAction = (value, fallback = "P1") => (actionPrioritySet.has(value) ? value : fallback);
 
-const sortTodayActions = (actions) => [...actions].sort((left, right) => actionPriorityRank[left.level] - actionPriorityRank[right.level]);
+const sortTodayActions = (actions) => [...actions].sort((left, right) => compareOpportunityActions(left.level, right.level));
 
 const opportunityCompletionOutcome = (status) => {
   if (status === "TO APPLY") return "完成后会标记为已投递，并计入本周投递进度。";

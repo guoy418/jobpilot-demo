@@ -1,20 +1,36 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jobpilot-persistence-"));
-const port = Number(process.env.PORT || 18817);
-const apiUrl = `http://127.0.0.1:${port}`;
-const dbPath = process.env.JOBPILOT_DB_PATH || path.join(tmpRoot, "jobpilot-persistence.sqlite");
-const fileDir = process.env.JOBPILOT_FILE_DIR || path.join(tmpRoot, "files");
+const getFreePort = () =>
+  new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (!address || typeof address === "string") {
+          reject(new Error("Could not allocate a local API port"));
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+  });
 
-let runIndex = 0;
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "jobpilot-persistence-"));
+const port = await getFreePort();
+const apiUrl = `http://127.0.0.1:${port}`;
+const dbPath = path.join(tmpRoot, "jobpilot-persistence.sqlite");
+const fileDir = path.join(tmpRoot, "files");
+const expectedDbPath = path.resolve(dbPath);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const startApi = async () => {
-  runIndex += 1;
   const child = spawn(process.execPath, ["server/index.mjs"], {
     cwd: process.cwd(),
     env: {
@@ -41,8 +57,18 @@ const startApi = async () => {
     }
     try {
       const response = await fetch(`${apiUrl}/api/health`);
-      if (response.ok) return { child, output: () => output };
-    } catch {
+      if (response.ok) {
+        const health = await response.json();
+        if (path.resolve(health.dbPath) !== expectedDbPath) {
+          child.kill();
+          throw new Error(`API health responded from an unexpected database: ${health.dbPath}`);
+        }
+        return { child, output: () => output };
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("unexpected database")) {
+        throw error;
+      }
       // Retry until the server binds the port.
     }
     await sleep(250);

@@ -1,3 +1,4 @@
+import { inferDueDateFromText } from "../shared/opportunityRules.mjs";
 import { parseInterviewReviewJsonText } from "./interviewReview/schema.mjs";
 
 const knownCompanies = ["字节跳动", "腾讯", "阿里云", "阿里", "小红书", "美团", "百度", "快手", "京东", "网易", "拼多多"];
@@ -16,33 +17,6 @@ const detectCity = (text) => knownCities.find((city) => text.includes(city)) || 
 const detectRoleTitle = (text, fallback = "") => {
   const titleMatch = text.match(/([\u4e00-\u9fa5A-Za-z]*(?:前端|产品|数据|运营|算法|后端|全栈|增长)[\u4e00-\u9fa5A-Za-z]*(?:实习生|工程师|经理|岗位|开发)?)/);
   return titleMatch?.[1]?.slice(0, 18) || fallback || "待确认岗位";
-};
-
-const dateKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-const addDays = (days) => {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() + days);
-  return dateKey(date);
-};
-
-const inferDueDateFromText = (deadline = "") => {
-  const text = String(deadline).trim();
-  if (!text || text === "待定") return "";
-  if (/今晚|today|tonight/i.test(text)) return addDays(0);
-  if (/明天|tomorrow/i.test(text)) return addDays(1);
-  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")}`;
-  const cnDateMatch = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
-  if (cnDateMatch) return `${new Date().getFullYear()}-${cnDateMatch[1].padStart(2, "0")}-${cnDateMatch[2].padStart(2, "0")}`;
-  const parsedDate = new Date(text);
-  return Number.isNaN(parsedDate.getTime()) ? "" : dateKey(parsedDate);
 };
 
 const sourceTextFrom = (payload) => {

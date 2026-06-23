@@ -1,5 +1,4 @@
 import {
-  BookOpenCheck,
   BriefcaseBusiness,
   CalendarClock,
   Check,
@@ -39,7 +38,6 @@ import { BoardView } from "./components/BoardView";
 import { ConfirmDialog, type ConfirmDialogState, type EndOpportunityDraft } from "./components/ConfirmDialog";
 import { DatePickerInput } from "./components/DatePickerInput";
 import { ModuleComposerDialog } from "./components/ModuleComposerDialog";
-import { OpportunityCombobox } from "./components/OpportunityCombobox";
 import { AssetPreviewDialog, SessionFilePreviewDialog } from "./components/PreviewDialogs";
 import { SettingsPage } from "./components/SettingsPage";
 import { WeeklyPage } from "./components/WeeklyPage";
@@ -53,6 +51,7 @@ import { useModuleComposerController } from "./hooks/useModuleComposerController
 import { useThemePreference } from "./hooks/useThemePreference";
 import { useWeeklyPlanController } from "./hooks/useWeeklyPlanController";
 import { AnswersPage, type AnswerCategoryEditorState, type AnswerUpdateField } from "./pages/AnswersPage";
+import { InterviewsPage, type InterviewView, type QaUpdateField } from "./pages/InterviewsPage";
 import { isGarbledTextContent } from "./textEncoding";
 import {
   computeOpportunityAction,
@@ -369,7 +368,7 @@ function App() {
   const [answerPage, setAnswerPage] = useState(0);
   const [opportunityPage, setOpportunityPage] = useState(0);
   const [resumeLinkedOpportunityPage, setResumeLinkedOpportunityPage] = useState(0);
-  const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
+  const [interviewView, setInterviewView] = useState<InterviewView>("list");
   const [answerView, setAnswerView] = useState<"list" | "detail">("list");
   const [opportunityVisibility, setOpportunityVisibility] = useState<OpportunityVisibilityFilter>("ACTIVE");
   const [opportunityPriorityFilter, setOpportunityPriorityFilter] = useState<OpportunityPriorityFilter>("ALL");
@@ -1058,7 +1057,7 @@ function App() {
     setAnswerView("detail");
   };
 
-  const updateSelectedQa = (field: keyof Pick<QaPair, "question" | "originalAnswer" | "critique" | "framework" | "optimizedAnswer">, value: string) => {
+  const updateSelectedQa = (field: QaUpdateField, value: string) => {
     const patch = { [field]: value } as Partial<QaPair>;
     setInterviewSessions((sessions) =>
       sessions.map((session) =>
@@ -3172,273 +3171,50 @@ function App() {
         )}
 
         {page === "interviews" && (
-          <section className="interview-page">
-            {interviewView === "list" ? (
-              <div className="surface interview-list-pane interview-home-pane paginated-pane">
-                <div className="paginated-pane-header">
-                  <PageIntro
-                    label="面试复盘"
-                    title="记录每一场面试"
-                    detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
-                    action={`${interviewSessions.length} 场面试`}
-                    helpTooltip="待整理问题指复盘中被标记为薄弱、还需要整理或练习的问题。只要一场面试还有待整理问题，它就会进入今日行动；标记已处理后会从今日行动中移除。"
-                    helpLabel="待整理问题说明"
-                  />
-
-                  <div className="button-row tight-row">
-                    <button className="primary-button" onClick={() => openComposer("interview")}>
-                      <Upload size={16} />
-                      <span>导入面试复盘</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="paginated-pane-body">
-                  <div className="interview-card-grid paginated-pane-content">
-                    {filteredInterviewSessions.length === 0 ? (
-                      <EmptyState title="没有匹配的面试" detail="清空搜索，或导入一场新的面试复盘。" className="filtered-empty-state" />
-                    ) : visibleInterviewSessions.map((session) => {
-                      const weakCount = session.qaPairs.filter((pair) => pair.weak).length;
-                      return (
-                        <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
-                          <div className="interview-card-topline">
-                            <span>{session.date}</span>
-                            <strong>{weakCount ? `${weakCount} 题待整理` : "已整理"}</strong>
-                          </div>
-                          <h3>{session.company}</h3>
-                          <p>{session.role} · {session.round}</p>
-                          <div className="interview-card-stats">
-                            <span>{session.qaPairs.length} 个问题</span>
-                            <span>{session.sourceFiles?.length ?? 0} 份材料</span>
-                            <ChevronRight size={16} />
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <ListPager
-                  className="paginated-pane-footer"
-                  label="面试复盘列表"
-                  page={safeInterviewPage}
-                  pageCount={interviewPageCount}
-                  onPageChange={setInterviewPage}
-                />
-              </div>
-            ) : (
-              <div className="surface review-editor interview-detail-pane">
-                <div className="interview-detail-nav interview-detail-nav-start">
-                  <button
-                    className="ghost-button compact-button"
-                    onClick={() => (interviewView === "question" ? setInterviewView("session") : setInterviewView("list"))}
-                  >
-                    <ChevronLeft size={14} />
-                    <span>{interviewView === "question" ? "问题目录" : "全部面试"}</span>
-                  </button>
-                </div>
-
-                {interviewView === "session" ? (
-                  <>
-                    <SectionTitle label={`${selectedInterview.date} / ${selectedInterview.round}`} title={`${selectedInterview.company} · ${selectedInterview.role}`} action={`${selectedInterview.qaPairs.length} 个问题`} />
-
-                    <div className="draft-edit-grid interview-session-edit">
-                      <label>
-                        <span>公司</span>
-                        <input value={selectedInterview.company} onChange={(event) => updateSelectedInterview({ company: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>岗位</span>
-                        <input value={selectedInterview.role} onChange={(event) => updateSelectedInterview({ role: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>轮次</span>
-                        <input value={selectedInterview.round} onChange={(event) => updateSelectedInterview({ round: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>日期</span>
-                        <input value={selectedInterview.date} onChange={(event) => updateSelectedInterview({ date: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>复盘优先级</span>
-                        <select
-                          value={selectedInterview.reviewPriority ?? "P1"}
-                          onChange={(event) => updateSelectedInterview({ reviewPriority: event.target.value as OpportunityAction })}
-                        >
-                          {reviewPriorityOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        <span>关联岗位</span>
-                        <OpportunityCombobox
-                          opportunities={opportunities}
-                          value={selectedInterview.opportunityId ?? ""}
-                          onChange={(value) => updateSelectedInterview({ opportunityId: value || undefined })}
-                          emptyLabel="未关联岗位"
-                        />
-                      </label>
-                      <label className="wide-field">
-                        <span>备注</span>
-                        <textarea
-                          value={selectedInterview.note ?? ""}
-                          onChange={(event) => updateSelectedInterview({ note: event.target.value })}
-                          placeholder="记录这场面试的背景、特殊要求或后续关注点。"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="source-panel compact-source">
-                      <SectionTitle label="面试材料" title="这场面试的录音或文字稿" action={`${selectedInterview.sourceFiles?.length ?? 0} 份`} />
-                      <div className="button-row source-panel-actions">
-                        <button className="secondary-button compact-button" disabled={interviewReparseBusy} onClick={requestReparseSelectedInterview}>
-                          <RotateCcw size={14} />
-                          <span>{interviewReparseBusy ? "整理中..." : "重新整理问题"}</span>
-                        </button>
-                      </div>
-                      {interviewReparseNotice ? <p className="parse-inline-notice">{interviewReparseNotice}</p> : null}
-                      <div className="source-list">
-                        {(selectedInterview.sourceFiles ?? []).map((file) => {
-                          const Icon = file.kind === "audio" ? FileAudio : FileText;
-                          const canPreview = Boolean(file.content || file.storageUri);
-                          return (
-                            <button
-                              className="source-item source-button file-source"
-                              key={file.id}
-                              disabled={!canPreview}
-                              onClick={() => (file.content ? setPreviewSessionFile(file) : openStoredFile(file.storageUri))}
-                            >
-                              <Icon size={18} />
-                              <div>
-                                <span>{file.kind === "audio" ? "原录音" : "文字稿"}</span>
-                                <strong>{file.fileName}</strong>
-                                <small>
-                                  {file.detail}
-                                  {file.duration ? ` / ${file.duration}` : ""}
-                                  {file.content ? " / 可预览文字" : file.storageUri ? " / 已存储，可打开" : " / 未存储原文件"}
-                                </small>
-                              </div>
-                              <em>{file.uploadedAt}</em>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="interview-toolbar">
-                      <span>问题目录</span>
-                      <div className="mini-actions">
-                        <button className="secondary-button compact-button" onClick={addQaPair}>
-                          <Plus size={14} />
-                          <span>添加问题</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="qa-list qa-directory-list">
-                      {selectedInterview.qaPairs.map((pair) => (
-                        <button className={`qa-card qa-card-button ${pair.weak ? "weak" : ""} ${pair.id === selectedQa.id ? "selected-qa" : ""}`} key={pair.id} onClick={() => openInterviewQuestion(pair.id)}>
-                          <div>
-                            <span className="type-pill">{pair.type}</span>
-                            <h3>{pair.question}</h3>
-                            <p>{pair.critique}</p>
-                          </div>
-                          <div className="score">{pair.score}/5</div>
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="danger-zone">
-                      <span>危险操作</span>
-                      <button
-                        className="destructive-button compact-button"
-                        onClick={() =>
-                          requestConfirm({
-                            title: "删除这场面试？",
-                            description: `「${selectedInterview.company} / ${selectedInterview.round}」及其中所有问题会一并删除，且无法恢复。`,
-                            confirmLabel: "删除面试",
-                            onConfirm: deleteSelectedInterview,
-                          })
-                        }
-                      >
-                        删除整场面试
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <SectionTitle label={`${selectedInterview.company} / ${selectedInterview.round}`} title={selectedQa.question} action={selectedQa.weak ? "需练习" : "可复用"} />
-                    <div className="interview-question-context">
-                      <span>{selectedInterview.role}</span>
-                      <span>{selectedInterview.date}</span>
-                      <span>{selectedQa.type}</span>
-                      <strong>{selectedQa.score}/5</strong>
-                    </div>
-
-                    <ReviewBlock label="面试问题" value={selectedQa.question} onChange={(value) => updateSelectedQa("question", value)} />
-                    <ReviewBlock
-                      label="我的原回答"
-                      value={selectedQa.originalAnswer}
-                      onChange={(value) => updateSelectedQa("originalAnswer", value)}
-                    />
-                    <ReviewBlock
-                      label="复盘建议"
-                      value={selectedQa.critique}
-                      onChange={(value) => updateSelectedQa("critique", value)}
-                    />
-                    <ReviewBlock
-                      label="推荐回答框架"
-                      value={selectedQa.framework}
-                      onChange={(value) => updateSelectedQa("framework", value)}
-                    />
-                    <ReviewBlock
-                      label="具体优化回答"
-                      value={selectedQa.optimizedAnswer}
-                      onChange={(value) => updateSelectedQa("optimizedAnswer", value)}
-                    />
-
-                    <div className="button-row">
-                      <button className="primary-button" onClick={createAnswerCard}>
-                        <BookOpenCheck size={16} />
-                        <span>生成答案卡</span>
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={addSelectedQaToPractice}
-                      >
-                        <ClipboardList size={16} />
-                        <span>加入练习</span>
-                      </button>
-                      <button className="secondary-button" onClick={() => updateSelectedQaWeak(!selectedQa.weak)}>
-                        <Check size={16} />
-                        <span>{selectedQa.weak ? "标记已处理" : "重新标为薄弱"}</span>
-                      </button>
-                    </div>
-
-                    <div className="danger-zone">
-                      <span>危险操作</span>
-                      <button
-                        className="destructive-button compact-button"
-                        onClick={() =>
-                          requestConfirm({
-                            title: "删除这个问题？",
-                            description: `「${selectedQa.question}」及其回答、评价会一并删除，且无法恢复。`,
-                            confirmLabel: "删除问题",
-                            onConfirm: deleteSelectedQa,
-                          })
-                        }
-                      >
-                        删除当前问题
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </section>
+          <InterviewsPage
+            interviewSessions={interviewSessions}
+            filteredInterviewSessions={filteredInterviewSessions}
+            visibleInterviewSessions={visibleInterviewSessions}
+            safeInterviewPage={safeInterviewPage}
+            interviewPageCount={interviewPageCount}
+            interviewView={interviewView}
+            selectedInterview={selectedInterview}
+            selectedQa={selectedQa}
+            opportunities={opportunities}
+            reviewPriorityOptions={reviewPriorityOptions}
+            interviewReparseBusy={interviewReparseBusy}
+            interviewReparseNotice={interviewReparseNotice}
+            onOpenComposer={() => openComposer("interview")}
+            onOpenInterviewSession={openInterviewSession}
+            onInterviewPageChange={setInterviewPage}
+            onInterviewViewChange={setInterviewView}
+            onUpdateSelectedInterview={updateSelectedInterview}
+            onRequestReparseSelectedInterview={requestReparseSelectedInterview}
+            onOpenStoredFile={openStoredFile}
+            onPreviewSessionFile={setPreviewSessionFile}
+            onAddQaPair={addQaPair}
+            onOpenInterviewQuestion={openInterviewQuestion}
+            onRequestDeleteInterview={() =>
+              requestConfirm({
+                title: "删除这场面试？",
+                description: `「${selectedInterview.company} / ${selectedInterview.round}」及其中所有问题会一并删除，且无法恢复。`,
+                confirmLabel: "删除面试",
+                onConfirm: deleteSelectedInterview,
+              })
+            }
+            onUpdateSelectedQa={updateSelectedQa}
+            onCreateAnswerCard={createAnswerCard}
+            onAddSelectedQaToPractice={addSelectedQaToPractice}
+            onUpdateSelectedQaWeak={updateSelectedQaWeak}
+            onRequestDeleteQa={() =>
+              requestConfirm({
+                title: "删除这个问题？",
+                description: `「${selectedQa.question}」及其回答、评价会一并删除，且无法恢复。`,
+                confirmLabel: "删除问题",
+                onConfirm: deleteSelectedQa,
+              })
+            }
+          />
         )}
 
         {page === "answers" && (

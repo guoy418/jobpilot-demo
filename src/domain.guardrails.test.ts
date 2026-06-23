@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { computeOpportunityAction, getRestorableOpportunityStatus, resolveOpportunityAction } from "./domain";
+import * as sharedOpportunityRules from "../shared/opportunityRules.mjs";
+import {
+  computeOpportunityAction,
+  defaultOpportunityNextAction,
+  getRestorableOpportunityStatus,
+  inferDueDateFromText,
+  parseDateLike,
+  resolveOpportunityAction,
+} from "./domain";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -122,6 +130,27 @@ describe("opportunity action priority guardrails", () => {
         match: "MEDIUM",
       }),
     ).toBe("P2");
+  });
+});
+
+describe("shared opportunity rule facade", () => {
+  it("keeps frontend domain exports aligned with the shared rule module", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 23, 10));
+
+    const opportunity = {
+      status: "TO APPLY" as const,
+      deadline: "明天",
+      priority: "A" as const,
+      match: "HIGH" as const,
+    };
+
+    expect(inferDueDateFromText(opportunity.deadline)).toBe(sharedOpportunityRules.inferDueDateFromText(opportunity.deadline));
+    expect(computeOpportunityAction(opportunity)).toBe(sharedOpportunityRules.computeOpportunityAction(opportunity));
+    expect(defaultOpportunityNextAction("WAITING")).toBe(sharedOpportunityRules.defaultOpportunityNextAction("WAITING"));
+    expect(parseDateLike("Jun 24", new Date(2026, 5, 23))?.getTime()).toBe(
+      sharedOpportunityRules.parseDateLike("Jun 24", new Date(2026, 5, 23))?.getTime(),
+    );
   });
 });
 

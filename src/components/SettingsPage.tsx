@@ -14,6 +14,8 @@ type AiSettingsShape = {
   notes: string;
 };
 
+type RestorePreviewState = (BackupRestorePreview & { fileName: string }) | null;
+
 export function SettingsPage({
   isPublicDemo,
   isApiEnabled,
@@ -38,7 +40,7 @@ export function SettingsPage({
   onExportInterviewReviews: () => void;
 }) {
   const restoreInputRef = useRef<HTMLInputElement>(null);
-  const [restorePreview, setRestorePreview] = useState<(BackupRestorePreview & { fileName: string }) | null>(null);
+  const [restorePreview, setRestorePreview] = useState<RestorePreviewState>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
 
   const openRestorePicker = () => {

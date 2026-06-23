@@ -1,26 +1,25 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const baseURL = process.env.JOBPILOT_E2E_APP_URL;
+
+if (!baseURL) {
+  throw new Error("JOBPILOT_E2E_APP_URL is required. Run npm run test:e2e:local.");
+}
+
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "**/*.e2e.ts",
-  testIgnore: "**/local-api-persistence.e2e.ts",
-  timeout: 30_000,
+  testMatch: "**/local-api-persistence.e2e.ts",
+  timeout: 45_000,
   expect: {
-    timeout: 5_000,
+    timeout: 7_000,
   },
-  fullyParallel: true,
+  fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: "http://127.0.0.1:5175",
+    baseURL,
     trace: "retain-on-failure",
-  },
-  webServer: {
-    command: "npm run dev:demo -- --host 127.0.0.1",
-    url: "http://127.0.0.1:5175",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
   },
   projects: [
     {
