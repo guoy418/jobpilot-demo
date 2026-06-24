@@ -94,7 +94,7 @@ describe("today action utilities", () => {
         fallbackSummary,
       ),
     ).toMatchObject({
-      submittedApplications: 12,
+      submittedApplications: fallbackSummary.submittedApplications,
       urgentCount: fallbackSummary.urgentCount,
       pendingReviewCount: 14,
       applicationGap: fallbackSummary.applicationGap,

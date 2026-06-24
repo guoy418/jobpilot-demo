@@ -1,4 +1,4 @@
-import { compareOpportunityActions, getWeeklyWindow, parseDateLike, resolveOpportunityAction, statusLabel, submittedStatuses } from "./domain";
+import { compareOpportunityActions, countWeeklySubmittedApplications, resolveOpportunityAction, statusLabel } from "./domain";
 import type { AnswerCard, InterviewSession, Opportunity, OpportunityAction, Page, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
 export type TodayAction = {
@@ -30,33 +30,13 @@ export type DashboardSummary = {
 export const selectResumeName = (resumeList: ResumeVersion[], resumeId: string) =>
   resumeList.find((resume) => resume.id === resumeId)?.name ?? "未选择简历";
 
-const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 const resolveInterviewReviewPriority = (session: InterviewSession): OpportunityAction => session.reviewPriority ?? "P1";
 
 export const sortTodayActions = (actions: TodayAction[]): TodayAction[] =>
   [...actions].sort((left, right) => compareOpportunityActions(left.level, right.level));
 
-const getSubmittedAt = (opportunity: Opportunity, now = new Date()) => {
-  const submittedEvents = opportunity.timeline
-    .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
-    .map((event) => parseDateLike(event.occurredAt, now))
-    .filter((date): date is Date => Boolean(date))
-    .sort((left, right) => left.getTime() - right.getTime());
-  if (!submittedEvents.length) return null;
-  const hasSubmittedStatus =
-    submittedStatuses.includes(opportunity.status) ||
-    (opportunity.previousStatus ? submittedStatuses.includes(opportunity.previousStatus) : false) ||
-    opportunity.status === "ENDED";
-  return hasSubmittedStatus ? submittedEvents[0] : null;
-};
-
 const selectWeeklySubmittedApplications = (opportunities: Opportunity[], weeklyPlan: WeeklyPlan) => {
-  const now = new Date();
-  const { start, end } = getWeeklyWindow(weeklyPlan, now);
-  return opportunities.filter((opportunity) => {
-    const submittedAt = getSubmittedAt(opportunity, now);
-    return submittedAt !== null && submittedAt >= start && submittedAt < end;
-  }).length;
+  return countWeeklySubmittedApplications(opportunities, weeklyPlan);
 };
 
 const weeklyActionRoute = (task: WeeklyTask): Pick<TodayAction, "page" | "targetId" | "taskId"> => {

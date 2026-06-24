@@ -4,14 +4,13 @@ import { DatabaseSync } from "node:sqlite";
 import {
   compareOpportunityActions,
   computeOpportunityAction,
+  countWeeklySubmittedApplications,
   defaultOpportunityNextAction,
   getRestorableOpportunityStatus,
-  getWeeklyWindow,
   inferDueDateFromText,
   opportunityActionValues,
   opportunityStatusFlow,
   opportunityStatusNextAction,
-  parseDateLike,
   resolveOpportunityAction,
   shouldAdvanceLinkedOpportunityAfterInterview,
   statusLabel as opportunityStatusLabel,
@@ -35,30 +34,10 @@ const defaultAnswerCategories = [
   { id: "CAT-INTERNSHIP-DETAILS", name: "业务理解/细节追问", parentId: "CAT-INTERNSHIP", sortOrder: 20, system: false },
 ];
 
-const submittedTimelinePattern = /投递|已投递|\bAPPLIED\b/i;
 const actionPrioritySet = new Set(opportunityActionValues);
 
-const getSubmittedAt = (opportunity, now = new Date()) => {
-  const submittedEvents = opportunity.timeline
-    .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
-    .map((event) => parseDateLike(event.occurredAt, now))
-    .filter(Boolean)
-    .sort((left, right) => left.getTime() - right.getTime());
-  if (!submittedEvents.length) return null;
-  const hasSubmittedStatus =
-    submittedStatuses.includes(opportunity.status) ||
-    (opportunity.previousStatus ? submittedStatuses.includes(opportunity.previousStatus) : false) ||
-    opportunity.status === "ENDED";
-  return hasSubmittedStatus ? submittedEvents[0] : null;
-};
-
 const selectWeeklySubmittedApplications = (opportunities, weeklyPlan) => {
-  const now = new Date();
-  const { start, end } = getWeeklyWindow(weeklyPlan, now);
-  return opportunities.filter((opportunity) => {
-    const submittedAt = getSubmittedAt(opportunity, now);
-    return submittedAt !== null && submittedAt >= start && submittedAt < end;
-  }).length;
+  return countWeeklySubmittedApplications(opportunities, weeklyPlan);
 };
 
 const normalizeOpportunityAction = (value, fallback = "P1") => (actionPrioritySet.has(value) ? value : fallback);

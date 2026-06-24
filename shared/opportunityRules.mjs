@@ -11,6 +11,7 @@ export const statusLabel = {
 
 export const submittedStatuses = ["APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
 export const opportunityStatusFlow = ["TO APPLY", "APPLIED", "WRITTEN TEST", "SCREENING", "INTERVIEWING", "WAITING", "OFFER"];
+const submittedTimelinePattern = /已投递|已更新为已投递|更新为已投递|标记已投递|完成(?:内推)?投递|投递(?:完成|成功)|(?:已)?提交(?:申请|材料|简历)?|申请已提交|\bAPPLIED\b/i;
 
 export const opportunityStatusAction = {
   "TO APPLY": "P0",
@@ -144,10 +145,8 @@ const startOfDay = (date) => {
   return next;
 };
 
-export const parseDateLike = (value = "", now = new Date()) => {
+const parseExplicitDateLike = (value = "", now = new Date()) => {
   const text = String(value).trim();
-  if (!text || /^next$/i.test(text)) return null;
-  if (/^(now|today)$/i.test(text)) return now;
 
   const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
   if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
@@ -157,9 +156,20 @@ export const parseDateLike = (value = "", now = new Date()) => {
 
   const enMonthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b/i);
   if (enMonthMatch) {
-    const monthIndex = ["jan", "feb", "mar", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(enMonthMatch[1].slice(0, 3).toLowerCase());
+    const monthIndex = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(enMonthMatch[1].slice(0, 3).toLowerCase());
     if (monthIndex >= 0) return new Date(now.getFullYear(), monthIndex, Number(enMonthMatch[2]));
   }
+
+  return null;
+};
+
+export const parseDateLike = (value = "", now = new Date()) => {
+  const text = String(value).trim();
+  if (!text || /^next$/i.test(text)) return null;
+  if (/^(now|today)$/i.test(text)) return now;
+
+  const explicitDate = parseExplicitDateLike(text, now);
+  if (explicitDate) return explicitDate;
 
   const parsedDate = new Date(text);
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
@@ -178,4 +188,38 @@ export const getWeeklyWindow = (weeklyPlan, now = new Date()) => {
   const planEnd = new Date(planStart.getTime() + 7 * dayMs);
   const start = now >= planStart && now < planEnd ? planStart : currentWeekStart;
   return { start, end: new Date(start.getTime() + 7 * dayMs) };
+};
+
+export const isSubmittedTimelineEvent = (event) =>
+  event?.status === "done" && submittedTimelinePattern.test(`${event.title ?? ""} ${event.detail ?? ""}`);
+
+const getTimelineEventOccurredAt = (event, now = new Date()) => {
+  const occurredAtText = String(event?.occurredAt ?? "").trim();
+  const explicitTitleDate = parseExplicitDateLike(event?.title ?? "", now);
+  if (/^(now|today)$/i.test(occurredAtText) && explicitTitleDate) return explicitTitleDate;
+
+  return parseDateLike(occurredAtText, now) ?? explicitTitleDate;
+};
+
+export const getOpportunitySubmittedAt = (opportunity, now = new Date()) => {
+  const hasSubmittedStatus =
+    submittedStatuses.includes(opportunity.status) ||
+    (opportunity.previousStatus ? submittedStatuses.includes(opportunity.previousStatus) : false) ||
+    opportunity.status === "ENDED";
+  if (!hasSubmittedStatus) return null;
+
+  const submittedEvents = (opportunity.timeline ?? [])
+    .filter(isSubmittedTimelineEvent)
+    .map((event) => getTimelineEventOccurredAt(event, now))
+    .filter(Boolean)
+    .sort((left, right) => left.getTime() - right.getTime());
+  return submittedEvents[0] ?? null;
+};
+
+export const countWeeklySubmittedApplications = (opportunities = [], weeklyPlan, now = new Date()) => {
+  const { start, end } = getWeeklyWindow(weeklyPlan, now);
+  return opportunities.filter((opportunity) => {
+    const submittedAt = getOpportunitySubmittedAt(opportunity, now);
+    return submittedAt !== null && submittedAt >= start && submittedAt < end;
+  }).length;
 };

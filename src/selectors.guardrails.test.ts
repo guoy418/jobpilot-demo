@@ -142,6 +142,42 @@ describe("dashboard selector guardrails", () => {
       applicationGap: 2,
     });
   });
+
+  it("counts only real submitted timestamps inside the current weekly window", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 10));
+
+    const opportunities: Opportunity[] = [
+      makeOpportunity({
+        id: "opp-submitted-before-week",
+        status: "APPLIED",
+        timeline: [
+          { id: "tl-old-submit", occurredAt: "Now", title: "Jun 14, 18:02 已更新为已投递", detail: "上汽官网申请已提交", status: "done" },
+          { id: "tl-current-follow-up", occurredAt: "Now", title: "Jun 23, 09:30 更新为筛选中", detail: "三天后跟进投递结果", status: "done" },
+        ],
+      }),
+      makeOpportunity({
+        id: "opp-submitted-this-week",
+        status: "SCREENING",
+        timeline: [{ id: "tl-week-submit", occurredAt: "Now", title: "Jun 23, 10:15 已更新为已投递", detail: "官网申请已提交", status: "done" }],
+      }),
+      makeOpportunity({
+        id: "opp-status-only-submitted",
+        status: "APPLIED",
+        timeline: [],
+      }),
+      makeOpportunity({
+        id: "opp-invalid-submitted-date",
+        status: "APPLIED",
+        timeline: [{ id: "tl-invalid-submit", occurredAt: "Next", title: "已投递", detail: "状态已是已投递，但没有实际投递时间", status: "done" }],
+      }),
+    ];
+
+    expect(selectDashboardSummary(opportunities, [], makeWeeklyPlan())).toMatchObject({
+      submittedApplications: 1,
+      applicationGap: 3,
+    });
+  });
 });
 
 describe("today action selector guardrails", () => {

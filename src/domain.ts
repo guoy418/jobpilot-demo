@@ -4,7 +4,9 @@ import type { InterviewSession, Opportunity, OpportunityStatus, PipelineStage, P
 export {
   compareOpportunityActions,
   computeOpportunityAction,
+  countWeeklySubmittedApplications,
   defaultOpportunityNextAction,
+  getOpportunitySubmittedAt,
   getOpportunityDaysUntilDue,
   getOpportunityDueDate,
   getRestorableOpportunityStatus,
@@ -21,6 +23,7 @@ export {
   shouldAdvanceLinkedOpportunityAfterInterview,
   statusLabel,
   submittedStatuses,
+  isSubmittedTimelineEvent,
 } from "../shared/opportunityRules.mjs";
 
 export const sourceKindLabel: Record<SourceAsset["kind"], string> = {

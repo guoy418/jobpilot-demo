@@ -40,7 +40,7 @@ export const todayActionOutcome = (action: TodayAction) => {
 };
 
 export const normalizeDashboardSummary = (summary: ApiDashboardSummary | null, fallback: DashboardSummary): DashboardSummary => ({
-  submittedApplications: numberWithFallback(summary?.submittedApplications, fallback.submittedApplications),
+  submittedApplications: fallback.submittedApplications,
   urgentCount: numberWithFallback(summary?.urgentCount, fallback.urgentCount),
   pendingReviewCount: numberWithFallback(summary?.pendingReviewCount ?? summary?.weakQaCount, fallback.pendingReviewCount),
   toApplyCount: numberWithFallback(summary?.toApplyCount, fallback.toApplyCount),
@@ -48,7 +48,7 @@ export const normalizeDashboardSummary = (summary: ApiDashboardSummary | null, f
   p0Count: numberWithFallback(summary?.p0Count, fallback.p0Count),
   p1Count: numberWithFallback(summary?.p1Count, fallback.p1Count),
   weakInterviewCount: numberWithFallback(summary?.weakInterviewCount, fallback.weakInterviewCount),
-  applicationGap: numberWithFallback(summary?.applicationGap, fallback.applicationGap),
+  applicationGap: fallback.applicationGap,
 });
 
 export const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback: TodayAction[]): TodayAction[] => {

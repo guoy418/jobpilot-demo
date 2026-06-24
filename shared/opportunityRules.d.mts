@@ -25,6 +25,19 @@ type WeeklyPlanLike = {
   weekStart?: string;
 };
 
+type TimelineEventLike = {
+  occurredAt?: string;
+  title?: string;
+  detail?: string;
+  status?: string;
+};
+
+type OpportunitySubmittedLike = {
+  status: OpportunityStatus;
+  previousStatus?: OpportunityStatus | null;
+  timeline?: TimelineEventLike[];
+};
+
 export const statusLabel: Record<OpportunityStatus, string>;
 export const submittedStatuses: OpportunityStatus[];
 export const opportunityStatusFlow: OpportunityStatus[];
@@ -47,6 +60,9 @@ export const getRestorableOpportunityStatus: (
 export const shouldAdvanceLinkedOpportunityAfterInterview: (status: OpportunityStatus) => boolean;
 export const parseDateLike: (value?: string, now?: Date) => Date | null;
 export const getWeeklyWindow: (weeklyPlan?: WeeklyPlanLike | null, now?: Date) => { start: Date; end: Date };
+export const isSubmittedTimelineEvent: (event?: TimelineEventLike | null) => boolean;
+export const getOpportunitySubmittedAt: (opportunity: OpportunitySubmittedLike, now?: Date) => Date | null;
+export const countWeeklySubmittedApplications: (opportunities?: OpportunitySubmittedLike[], weeklyPlan?: WeeklyPlanLike | null, now?: Date) => number;
 import type { Opportunity, OpportunityAction, OpportunityMatch, OpportunityPriority, OpportunityStatus } from "../src/types";
 
 type ActionInput = {

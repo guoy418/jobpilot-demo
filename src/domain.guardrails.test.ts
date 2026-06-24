@@ -4,6 +4,7 @@ import * as sharedOpportunityRules from "../shared/opportunityRules.mjs";
 import {
   computeOpportunityAction,
   defaultOpportunityNextAction,
+  getOpportunitySubmittedAt,
   getRestorableOpportunityStatus,
   inferDueDateFromText,
   parseDateLike,
@@ -151,6 +152,35 @@ describe("shared opportunity rule facade", () => {
     expect(parseDateLike("Jun 24", new Date(2026, 5, 23))?.getTime()).toBe(
       sharedOpportunityRules.parseDateLike("Jun 24", new Date(2026, 5, 23))?.getTime(),
     );
+  });
+
+  it("parses English month timeline dates without shifting months", () => {
+    expect(parseDateLike("Apr 14 09:30", new Date(2026, 5, 23))?.getTime()).toBe(new Date(2026, 3, 14).getTime());
+    expect(parseDateLike("Jun 24", new Date(2026, 5, 23))?.getTime()).toBe(new Date(2026, 5, 24).getTime());
+  });
+
+  it("uses imported title dates before relative submitted placeholders", () => {
+    const now = new Date(2026, 5, 24, 10);
+
+    expect(
+      getOpportunitySubmittedAt(
+        {
+          status: "APPLIED",
+          timeline: [{ occurredAt: "Now", title: "Jun 14, 18:02 已更新为已投递", detail: "上汽官网申请已提交", status: "done" }],
+        },
+        now,
+      )?.getTime(),
+    ).toBe(new Date(2026, 5, 14).getTime());
+
+    expect(
+      getOpportunitySubmittedAt(
+        {
+          status: "APPLIED",
+          timeline: [{ occurredAt: "Now", title: "已更新为已投递", detail: "手动更新当前岗位阶段", status: "done" }],
+        },
+        now,
+      )?.getTime(),
+    ).toBe(now.getTime());
   });
 });
 
