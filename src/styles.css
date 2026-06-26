@@ -697,6 +697,17 @@ button:focus-visible {
   gap: 8px;
 }
 
+.today-header-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.today-history-button {
+  min-height: 32px;
+}
+
 .today-view-toggle {
   display: inline-flex;
   gap: 2px;
@@ -1215,6 +1226,259 @@ button:focus-visible {
   background: color-mix(in srgb, var(--surface) 44%, transparent);
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+.today-history-panel {
+  width: min(980px, 100%);
+}
+
+.today-history-intro {
+  max-width: 720px;
+  margin: 10px 0 18px;
+}
+
+.today-history-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 16px;
+}
+
+.today-history-calendar,
+.today-history-detail {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-raised) 82%, var(--surface));
+}
+
+.today-history-calendar {
+  padding: 14px;
+}
+
+.today-history-monthbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.today-history-monthbar strong {
+  color: var(--text-display);
+  text-align: center;
+  letter-spacing: -0.01em;
+}
+
+.today-history-weekdays,
+.today-history-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.today-history-weekdays {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+.today-history-day {
+  min-height: 52px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  color: var(--text-secondary);
+  padding: 6px 4px;
+  text-align: center;
+}
+
+.today-history-day span {
+  color: var(--text-display);
+  font-family: "Space Mono", monospace;
+  font-size: 13px;
+}
+
+.today-history-day em {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.today-history-day.outside-month {
+  opacity: 0.42;
+}
+
+.today-history-day:hover,
+.today-history-day:focus-visible,
+.active-history-day {
+  border-color: var(--border-visible);
+  background: color-mix(in srgb, var(--surface-raised) 78%, var(--text-display) 4%);
+}
+
+.today-history-day:focus-visible {
+  outline: 2px solid var(--button-focus-ring);
+  outline-offset: 2px;
+}
+
+.history-day-resolved {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--success) 72%, var(--border));
+}
+
+.history-day-partial {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--priority-p1) 64%, var(--border));
+}
+
+.history-day-shown {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--text-muted) 48%, var(--border));
+}
+
+.history-day-created {
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--interactive) 58%, var(--border));
+}
+
+.today-history-detail {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+}
+
+.today-history-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.today-history-detail-header h3 {
+  margin-top: 4px;
+  color: var(--text-display);
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+
+.today-history-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.today-history-stats span,
+.today-history-source h4 span,
+.today-history-status {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 58%, transparent);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.today-history-source {
+  display: grid;
+  gap: 10px;
+}
+
+.today-history-source h4 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-display);
+  font-size: 14px;
+}
+
+.today-history-item-list {
+  display: grid;
+  gap: 8px;
+}
+
+.today-history-created-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.today-history-created-group {
+  display: grid;
+  gap: 8px;
+}
+
+.today-history-created-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.today-history-created-label em {
+  color: var(--text-muted);
+  font-style: normal;
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+}
+
+.today-history-item {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 58%, transparent);
+}
+
+.today-history-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.today-history-item h5 {
+  color: var(--text-display);
+  font-size: 15px;
+}
+
+.today-history-item p,
+.today-history-empty-source {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.today-history-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-muted);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+}
+
+.history-status-completed {
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+  color: color-mix(in srgb, var(--success) 78%, var(--text-display));
+}
+
+.history-status-dismissed {
+  border-color: color-mix(in srgb, var(--priority-p3) 40%, var(--border));
+  color: color-mix(in srgb, var(--priority-p3) 76%, var(--text-display));
+}
+
+.today-history-empty-source {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
 }
 
 .empty-state.home-empty-state {
@@ -5239,6 +5503,10 @@ small {
     grid-template-columns: 1fr;
   }
 
+  .today-history-layout {
+    grid-template-columns: 1fr;
+  }
+
   .instrument-panel,
   .card-grid,
   .settings-grid,
@@ -5416,6 +5684,11 @@ small {
     justify-items: start;
   }
 
+  .today-header-control-row {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .today-view-toggle {
     width: 100%;
   }
@@ -5456,6 +5729,18 @@ small {
   .today-source-empty {
     margin-right: 16px;
     margin-left: 20px;
+  }
+
+  .today-history-panel {
+    padding: 18px;
+  }
+
+  .today-history-detail-header {
+    grid-template-columns: 1fr;
+  }
+
+  .today-history-stats {
+    justify-content: flex-start;
   }
 
   .board {

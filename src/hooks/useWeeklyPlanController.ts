@@ -27,11 +27,13 @@ export function useWeeklyPlanController({
   onInsightsRefresh,
   onInsightsInvalidate,
   onMessage,
+  onTaskCreated,
 }: {
   initialPlan: WeeklyPlan;
   onInsightsRefresh: () => void;
   onInsightsInvalidate: () => void;
   onMessage: (message: string) => void;
+  onTaskCreated?: (task: WeeklyTask) => void;
 }) {
   const [weeklyPlan, setWeeklyPlan] = useState<WeeklyPlan>(initialPlan);
   const [weeklyTargetDraft, setWeeklyTargetDraft] = useState(String(Math.max(0, initialPlan.targetApplications)));
@@ -105,6 +107,7 @@ export function useWeeklyPlanController({
     setWeeklyPlan((plan) => ({ ...plan, tasks: [task, ...plan.tasks] }));
     if (options.resetPracticePage) setWeeklyPracticePage(0);
     onInsightsInvalidate();
+    onTaskCreated?.(task);
     syncCreatedWeeklyTask(task);
     if (options.message) onMessage(options.message);
   };

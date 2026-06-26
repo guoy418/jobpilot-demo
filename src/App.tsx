@@ -11,6 +11,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  History,
   Home,
   KanbanSquare,
   Library,
@@ -40,6 +41,7 @@ import { DatePickerInput } from "./components/DatePickerInput";
 import { ModuleComposerDialog } from "./components/ModuleComposerDialog";
 import { AssetPreviewDialog, SessionFilePreviewDialog } from "./components/PreviewDialogs";
 import { SettingsPage } from "./components/SettingsPage";
+import { TodayActionHistoryDialog } from "./components/TodayActionHistoryDialog";
 import { WeeklyPage } from "./components/WeeklyPage";
 import { WeeklyTaskDialog } from "./components/WeeklyTaskDialog";
 import { WeeklyTaskPriorityDialog } from "./components/WeeklyTaskPriorityDialog";
@@ -49,6 +51,7 @@ import { useApiInsights } from "./hooks/useApiInsights";
 import { useApiModeController } from "./hooks/useApiModeController";
 import { useDismissedTodayActions } from "./hooks/useDismissedTodayActions";
 import { useModuleComposerController } from "./hooks/useModuleComposerController";
+import { useTodayActionHistory } from "./hooks/useTodayActionHistory";
 import { useThemePreference } from "./hooks/useThemePreference";
 import { useWeeklyPlanController } from "./hooks/useWeeklyPlanController";
 import { AnswersPage, type AnswerCategoryEditorState, type AnswerUpdateField } from "./pages/AnswersPage";
@@ -157,6 +160,7 @@ import type {
   SessionFile,
   SourceAsset,
   TimelineEvent,
+  TodayCreatedRecordInput,
   ViewMode,
   WeeklyTask,
 } from "./types";
@@ -360,6 +364,7 @@ function App() {
   const [libraryNavOpen, setLibraryNavOpen] = useState(true);
   const [todayActionView, setTodayActionView] = useState<"priority" | "source">("priority");
   const [showMoreTodayActions, setShowMoreTodayActions] = useState(false);
+  const [todayHistoryOpen, setTodayHistoryOpen] = useState(false);
   const [expandedTodaySources, setExpandedTodaySources] = useState<Partial<Record<TodayAction["source"], boolean>>>({});
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(seedOpportunities[0].id);
@@ -402,6 +407,7 @@ function App() {
   const apiOpportunityIdsRef = useRef(new Set(seedOpportunities.map((item) => item.id)));
   const endOpportunityDraftRef = useRef<EndOpportunityDraft>(emptyEndOpportunityDraft());
   const modalBackdropPointerStartedRef = useRef(false);
+  const recordCreatedTodayRecordRef = useRef<(record: TodayCreatedRecordInput) => void>(() => undefined);
   const { aiSettings, updateAiSettings, resetAiSettings } = useAiSettings();
   const { apiMode, markApiOnline, markApiOffline, refreshApiHealth, useFallbackApiMode } = useApiModeController({ onMessage: setSystemMessage });
   const { apiDashboardSummary, apiTodayActions, replaceApiInsights, refreshApiInsights, invalidateApiInsights, invalidateTodayActions } = useApiInsights();
@@ -516,6 +522,14 @@ function App() {
     onInsightsRefresh: refreshApiInsights,
     onInsightsInvalidate: invalidateApiInsights,
     onMessage: setSystemMessage,
+    onTaskCreated: (task) =>
+      recordCreatedTodayRecordRef.current({
+        recordType: "weekly",
+        title: task.title,
+        detail: task.detail || task.sourceLabel,
+        targetId: task.id,
+        recordKey: `weekly:${task.id}`,
+      }),
   });
 
   const selectedOpportunity = opportunities.find((item) => item.id === selectedOpportunityId) ?? opportunities.find((item) => item.status !== "ENDED") ?? opportunities[0];
@@ -540,6 +554,12 @@ function App() {
   const localTodayActions = selectTodayActions(opportunities, interviewSessions, answerCards, weeklyPlan, resumeList);
   const hydratedTodayActions = normalizeTodayActions(apiTodayActions, localTodayActions);
   const todayActions = hydratedTodayActions.filter((action) => !isTodayActionDismissed(action));
+  const {
+    historyItems: todayActionHistoryItems,
+    recordCompletedTodayAction,
+    recordCreatedTodayRecord,
+  } = useTodayActionHistory(todayActions);
+  recordCreatedTodayRecordRef.current = recordCreatedTodayRecord;
   const weeklyProgressPercent = hasWeeklyTarget ? Math.min(100, (submittedApplications / weeklyTargetApplications) * 100) : 0;
   const topTodayActions = todayActions.slice(0, 3);
   const moreTodayActions = todayActions.slice(3);
@@ -1301,7 +1321,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm && !weeklyPriorityTask && !composer) return;
+    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm && !weeklyPriorityTask && !composer && !todayHistoryOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmDialog) setConfirmDialog(null);
@@ -1310,12 +1330,13 @@ function App() {
       else if (weeklyTaskForm) closeWeeklyTaskDialog();
       else if (previewAsset) setPreviewAsset(null);
       else if (previewSessionFile) setPreviewSessionFile(null);
+      else if (todayHistoryOpen) setTodayHistoryOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [composer, confirmDialog, previewAsset, previewSessionFile, weeklyPriorityTask, weeklyTaskForm]);
+  }, [composer, confirmDialog, previewAsset, previewSessionFile, todayHistoryOpen, weeklyPriorityTask, weeklyTaskForm]);
 
-  const modalOpen = Boolean(confirmDialog || previewAsset || previewSessionFile || weeklyTaskForm || weeklyPriorityTask || composer);
+  const modalOpen = Boolean(confirmDialog || previewAsset || previewSessionFile || weeklyTaskForm || weeklyPriorityTask || composer || todayHistoryOpen);
   useEffect(() => {
     if (!modalOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -1575,6 +1596,13 @@ function App() {
     setSelectedAnswerId(newCard.id);
     setAnswerView("detail");
     syncCreatedAnswerCard(newCard);
+    recordCreatedTodayRecord({
+      recordType: "answer",
+      title: newCard.question,
+      detail: newCard.framework,
+      targetId: newCard.id,
+      recordKey: `answer:${newCard.id}`,
+    });
     setSystemMessage("答案卡已添加");
   };
 
@@ -2001,6 +2029,13 @@ function App() {
     setOpportunities((items) => [nextOpportunity, ...items]);
     setSelectedOpportunityId(nextOpportunity.id);
     syncCreatedOpportunity(nextOpportunity);
+    recordCreatedTodayRecord({
+      recordType: "opportunity",
+      title: `${nextOpportunity.company} ${nextOpportunity.title}`,
+      detail: `${nextOpportunity.city} · ${nextOpportunity.nextAction}`,
+      targetId: nextOpportunity.id,
+      recordKey: `opportunity:${nextOpportunity.id}`,
+    });
     closeComposer();
     setPage("opportunityDetail");
     setSystemMessage("岗位已创建");
@@ -2085,6 +2120,13 @@ function App() {
     setSelectedInterviewId(nextSession.id);
     setSelectedQaId(nextSession.qaPairs[0]?.id ?? "");
     syncCreatedInterviewSession(nextSession);
+    recordCreatedTodayRecord({
+      recordType: "interview",
+      title: `${nextSession.company} ${nextSession.round}`,
+      detail: `${nextSession.role} · ${nextSession.qaPairs.length} 个问题`,
+      targetId: nextSession.id,
+      recordKey: `interview:${nextSession.id}`,
+    });
     const linkedOpportunity = nextSession.opportunityId ? opportunities.find((item) => item.id === nextSession.opportunityId) : undefined;
     if (
       linkedOpportunity &&
@@ -2122,6 +2164,13 @@ function App() {
     setResumeList((items) => [nextResume, ...items]);
     setSelectedResumeId(nextResume.id);
     syncCreatedResumeVersion(nextResume);
+    recordCreatedTodayRecord({
+      recordType: "resume",
+      title: nextResume.name,
+      detail: nextResume.fileName,
+      targetId: nextResume.id,
+      recordKey: `resume:${nextResume.id}`,
+    });
     closeComposer();
     setPage("resumes");
     setSystemMessage("简历已添加");
@@ -2148,6 +2197,13 @@ function App() {
     setAnswerCards((cards) => [newCard, ...cards]);
     setSelectedAnswerId(newCard.id);
     syncCreatedAnswerCard(newCard);
+    recordCreatedTodayRecord({
+      recordType: "answer",
+      title: newCard.question,
+      detail: newCard.framework,
+      targetId: newCard.id,
+      recordKey: `answer:${newCard.id}`,
+    });
     closeComposer();
     setAnswerView("detail");
     setPage("answers");
@@ -2400,6 +2456,7 @@ function App() {
     if (action.source === "weekly") {
       const taskId = action.taskId || (action.page === "weekly" ? action.targetId : "");
       if (!taskId) return;
+      recordCompletedTodayAction(action);
       updateWeeklyTask(taskId, "status", "done");
       invalidateTodayActions();
       setSystemMessage("今日任务已完成");
@@ -2409,6 +2466,7 @@ function App() {
     if (action.source === "opportunity" && action.targetId) {
       const opportunity = opportunities.find((item) => item.id === action.targetId);
       if (!opportunity) return;
+      recordCompletedTodayAction(action);
       const nextStatus = completedOpportunityStatus(opportunity.status);
       if (nextStatus) {
         applyOpportunityProgress(opportunity.id, nextStatus, "manual", action.title);
@@ -2423,6 +2481,7 @@ function App() {
     if (action.source === "interview" && action.targetId) {
       const session = interviewSessions.find((item) => item.id === action.targetId);
       if (!session) return;
+      recordCompletedTodayAction(action);
       const weakPairs = session.qaPairs.filter((pair) => pair.weak);
       setInterviewSessions((sessions) =>
         sessions.map((item) =>
@@ -2435,8 +2494,9 @@ function App() {
       return;
     }
 
+    recordCompletedTodayAction(action);
     dismissTodayAction(action);
-    setSystemMessage("今日已暂不显示");
+    setSystemMessage("今日已处理");
   };
 
   const homeGoalCta = !hasWeeklyTarget
@@ -2564,6 +2624,13 @@ function App() {
       setSelectedAnswerId(newCard.id);
       setAnswerView("detail");
       syncCreatedAnswerCard(newCard);
+      recordCreatedTodayRecord({
+        recordType: "answer",
+        title: newCard.question,
+        detail: `来自${selectedInterview.company} / ${selectedInterview.round}`,
+        targetId: newCard.id,
+        recordKey: `answer:${newCard.id}`,
+      });
       setPage("answers");
       setSystemMessage("答案卡已创建");
     };
@@ -2580,6 +2647,13 @@ function App() {
           setSelectedAnswerId(savedCard.id);
           setAnswerView("detail");
           setPage("answers");
+          recordCreatedTodayRecord({
+            recordType: "answer",
+            title: savedCard.question,
+            detail: `来自${selectedInterview.company} / ${selectedInterview.round}`,
+            targetId: savedCard.id,
+            recordKey: `answer:${savedCard.id}`,
+          });
           setSystemMessage("答案卡已创建");
         })
         .catch(() => {
@@ -2726,23 +2800,29 @@ function App() {
                   <p>无需手动列清单，JobPilot 会根据岗位进度、复盘、本周计划和你指定的任务优先级安排今天要做的事。</p>
                 </div>
                 <div className="today-header-actions">
-                  <div className="today-view-toggle" role="group" aria-label="今日行动查看方式">
-                    <button
-                      type="button"
-                      className={todayActionView === "priority" ? "active-today-view" : ""}
-                      aria-pressed={todayActionView === "priority"}
-                      onClick={() => setTodayActionView("priority")}
-                    >
-                      系统推荐
+                  <div className="today-header-control-row">
+                    <button className="secondary-button compact-button today-history-button" onClick={() => setTodayHistoryOpen(true)}>
+                      <History size={14} />
+                      <span>历史</span>
                     </button>
-                    <button
-                      type="button"
-                      className={todayActionView === "source" ? "active-today-view" : ""}
-                      aria-pressed={todayActionView === "source"}
-                      onClick={() => setTodayActionView("source")}
-                    >
-                      来源分组
-                    </button>
+                    <div className="today-view-toggle" role="group" aria-label="今日行动查看方式">
+                      <button
+                        type="button"
+                        className={todayActionView === "priority" ? "active-today-view" : ""}
+                        aria-pressed={todayActionView === "priority"}
+                        onClick={() => setTodayActionView("priority")}
+                      >
+                        系统推荐
+                      </button>
+                      <button
+                        type="button"
+                        className={todayActionView === "source" ? "active-today-view" : ""}
+                        aria-pressed={todayActionView === "source"}
+                        onClick={() => setTodayActionView("source")}
+                      >
+                        来源分组
+                      </button>
+                    </div>
                   </div>
                   <div className="hero-number small">{todayActions.length}</div>
                 </div>
@@ -3702,6 +3782,15 @@ function App() {
             onClose={() => setWeeklyPriorityTask(null)}
             onBackdropMouseDown={markModalBackdropPointerStart}
             onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setWeeklyPriorityTask(null))}
+          />
+        )}
+
+        {todayHistoryOpen && (
+          <TodayActionHistoryDialog
+            historyItems={todayActionHistoryItems}
+            onClose={() => setTodayHistoryOpen(false)}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setTodayHistoryOpen(false))}
           />
         )}
 

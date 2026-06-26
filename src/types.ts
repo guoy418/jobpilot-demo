@@ -13,6 +13,49 @@ export type OpportunityPriority = "A" | "B" | "C";
 export type OpportunityMatch = "HIGH" | "MEDIUM" | "LOW";
 export type OpportunityAction = "P0" | "P1" | "P2" | "P3";
 export type OpportunityEndReason = "REJECTED" | "CLOSED" | "WITHDRAWN" | "OTHER";
+export type TodayActionHistoryStatus = "shown" | "completed" | "dismissed";
+export type TodayActionHistorySource = "opportunity" | "interview" | "weekly";
+export type TodayCreatedRecordKind = "opportunity" | "interview" | "answer" | "weekly" | "resume";
+
+export type TodayActionHistoryActionItem = {
+  kind?: "action";
+  id: string;
+  date: string;
+  actionKey: string;
+  source: TodayActionHistorySource;
+  sourceLabel?: string;
+  title: string;
+  detail: string;
+  level: OpportunityAction;
+  targetId?: string;
+  taskId?: string;
+  status: TodayActionHistoryStatus;
+  shownAt: string;
+  resolvedAt?: string;
+};
+
+export type TodayCreatedRecordHistoryItem = {
+  kind: "created";
+  id: string;
+  date: string;
+  recordKey: string;
+  recordType: TodayCreatedRecordKind;
+  recordTypeLabel: string;
+  title: string;
+  detail: string;
+  targetId?: string;
+  createdAt: string;
+};
+
+export type TodayActionHistoryItem = TodayActionHistoryActionItem | TodayCreatedRecordHistoryItem;
+
+export type TodayCreatedRecordInput = {
+  recordType: TodayCreatedRecordKind;
+  title: string;
+  detail?: string;
+  targetId?: string;
+  recordKey?: string;
+};
 
 export type OpportunityDraft = {
   kind: "opportunity";
