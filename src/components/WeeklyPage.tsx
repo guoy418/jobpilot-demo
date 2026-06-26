@@ -27,6 +27,7 @@ export function WeeklyPage({
   onGoToAnswers,
   onToggleTaskStatus,
   onUpdateTaskLevel,
+  onEditTaskRequest,
   onDeleteTaskRequest,
 }: {
   groups: WeeklyTaskGroup[];
@@ -44,6 +45,7 @@ export function WeeklyPage({
   onGoToAnswers: () => void;
   onToggleTaskStatus: (task: WeeklyTask) => void;
   onUpdateTaskLevel: (task: WeeklyTask, level: OpportunityAction) => void;
+  onEditTaskRequest: (task: WeeklyTask) => void;
   onDeleteTaskRequest: (task: WeeklyTask) => void;
 }) {
   return (
@@ -140,6 +142,9 @@ export function WeeklyPage({
                         <div className="weekly-task-actions">
                           <button className="weekly-card-action is-primary" onClick={() => onToggleTaskStatus(task)}>
                             {task.status === "done" ? "重新打开" : "标记已完成"}
+                          </button>
+                          <button className="weekly-card-action" onClick={() => onEditTaskRequest(task)}>
+                            编辑
                           </button>
                           <button className="weekly-card-action is-danger" onClick={() => onDeleteTaskRequest(task)}>
                             删除

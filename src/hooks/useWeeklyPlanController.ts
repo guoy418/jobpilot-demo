@@ -6,12 +6,21 @@ import type { WeeklyTaskFormDraft } from "../components/WeeklyTaskDialog";
 import type { WeeklyPlan, WeeklyTask } from "../types";
 
 const isOpenWeeklyTask = (task: WeeklyTask) => task.status === "open";
-
 const emptyWeeklyTaskForm = (): WeeklyTaskFormDraft => ({
   title: "",
   detail: "",
   level: "P2",
 });
+
+const weeklyTaskEditForm = (task: WeeklyTask): WeeklyTaskFormDraft => ({
+  editingTaskId: task.id,
+  title: task.title,
+  detail: task.detail,
+  level: task.level ?? "P2",
+});
+
+const isValidWeeklyTaskLevel = (level: WeeklyTask["level"]): level is NonNullable<WeeklyTask["level"]> =>
+  level === "P0" || level === "P1" || level === "P2" || level === "P3";
 
 export function useWeeklyPlanController({
   initialPlan,
@@ -138,6 +147,7 @@ export function useWeeklyPlanController({
   };
 
   const openWeeklyTaskDialog = () => setWeeklyTaskForm(emptyWeeklyTaskForm());
+  const openWeeklyTaskEditDialog = (task: WeeklyTask) => setWeeklyTaskForm(weeklyTaskEditForm(task));
   const updateWeeklyTaskForm = (patch: Partial<WeeklyTaskFormDraft>) => setWeeklyTaskForm((form) => (form ? { ...form, ...patch } : form));
   const closeWeeklyTaskDialog = () => setWeeklyTaskForm(null);
 
@@ -146,6 +156,20 @@ export function useWeeklyPlanController({
     const title = weeklyTaskForm.title.trim();
     if (!title) {
       onMessage("请填写动作标题");
+      return;
+    }
+    if (!isValidWeeklyTaskLevel(weeklyTaskForm.level)) {
+      onMessage("请选择有效优先级");
+      return;
+    }
+    if (weeklyTaskForm.editingTaskId) {
+      patchWeeklyTask(weeklyTaskForm.editingTaskId, {
+        title,
+        detail: weeklyTaskForm.detail.trim(),
+        level: weeklyTaskForm.level,
+      });
+      onMessage("动作已更新");
+      setWeeklyTaskForm(null);
       return;
     }
     addWeeklyTask({
@@ -215,6 +239,7 @@ export function useWeeklyPlanController({
     setWeeklyInterviewPage,
     setWeeklyPracticePage,
     openWeeklyTaskDialog,
+    openWeeklyTaskEditDialog,
     updateWeeklyTaskForm,
     closeWeeklyTaskDialog,
     submitWeeklyTaskForm,

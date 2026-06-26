@@ -500,6 +500,7 @@ function App() {
     setWeeklyInterviewPage,
     setWeeklyPracticePage,
     openWeeklyTaskDialog,
+    openWeeklyTaskEditDialog,
     updateWeeklyTaskForm,
     closeWeeklyTaskDialog,
     submitWeeklyTaskForm,
@@ -3597,6 +3598,7 @@ function App() {
             onGoToAnswers={() => goTo("answers")}
             onToggleTaskStatus={(task) => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
             onUpdateTaskLevel={(task, level) => updateWeeklyTask(task.id, "level", level)}
+            onEditTaskRequest={openWeeklyTaskEditDialog}
             onDeleteTaskRequest={(task) =>
               requestConfirm({
                 title: "删除这条动作？",
@@ -3683,6 +3685,7 @@ function App() {
         {weeklyTaskForm && (
           <WeeklyTaskDialog
             form={weeklyTaskForm}
+            mode={weeklyTaskForm.editingTaskId ? "edit" : "create"}
             onChange={updateWeeklyTaskForm}
             onSubmit={submitWeeklyTaskForm}
             onClose={closeWeeklyTaskDialog}

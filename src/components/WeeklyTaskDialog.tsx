@@ -3,6 +3,7 @@ import type { MouseEvent } from "react";
 import type { WeeklyTask } from "../types";
 
 export type WeeklyTaskFormDraft = {
+  editingTaskId?: string;
   title: string;
   detail: string;
   level: WeeklyTask["level"];
@@ -12,6 +13,7 @@ type BackdropHandler = (event: MouseEvent<HTMLDivElement>) => void;
 
 export function WeeklyTaskDialog({
   form,
+  mode = "create",
   onChange,
   onSubmit,
   onClose,
@@ -19,12 +21,15 @@ export function WeeklyTaskDialog({
   onBackdropClick,
 }: {
   form: WeeklyTaskFormDraft;
+  mode?: "create" | "edit";
   onChange: (patch: Partial<WeeklyTaskFormDraft>) => void;
   onSubmit: () => void;
   onClose: () => void;
   onBackdropMouseDown: BackdropHandler;
   onBackdropClick: BackdropHandler;
 }) {
+  const isEditing = mode === "edit";
+
   return (
     <div
       className="asset-preview weekly-task-dialog"
@@ -39,10 +44,10 @@ export function WeeklyTaskDialog({
           <X size={16} />
         </button>
         <div className="section-title">
-          <span>自主训练</span>
-          <h2 id="weekly-task-dialog-title">添加练习动作</h2>
+          <span>{isEditing ? "本周计划" : "自主训练"}</span>
+          <h2 id="weekly-task-dialog-title">{isEditing ? "编辑练习动作" : "添加练习动作"}</h2>
         </div>
-        <p>手动写下这周的练习任务，例如笔试、作品集或项目表达。</p>
+        <p>{isEditing ? "修改这张本周计划卡片的标题、备注和优先级。" : "手动写下这周的练习任务，例如笔试、作品集或项目表达。"}</p>
         <div className="draft-edit-grid weekly-task-form-grid">
           <label className="wide-field">
             <span>动作标题</span>
@@ -73,7 +78,7 @@ export function WeeklyTaskDialog({
         </div>
         <div className="button-row confirm-actions">
           <button className="primary-button" onClick={onSubmit}>
-            添加动作
+            {isEditing ? "保存修改" : "添加动作"}
           </button>
           <button className="secondary-button" onClick={onClose}>
             取消

@@ -305,8 +305,8 @@ describe("today action selector guardrails", () => {
     });
   });
 
-  it("reflects updated weekly task priority in today actions", () => {
-    const makeActionsForLevel = (level: WeeklyTask["level"]) =>
+  it("reflects updated weekly task edits in today actions", () => {
+    const makeActionsForTask = (overrides: Partial<WeeklyTask>) =>
       selectTodayActions(
         [],
         [],
@@ -316,23 +316,29 @@ describe("today action selector guardrails", () => {
             makeWeeklyTask({
               id: "task-priority-sync",
               title: "练习答案优先级",
+              detail: "旧备注",
               source: "answer",
               sourceLabel: "答案库",
               relatedEntityId: "answer-sync",
-              level,
+              level: "P2",
+              ...overrides,
             }),
           ],
         }),
         resumeList,
       );
 
-    expect(makeActionsForLevel("P3")[0]).toMatchObject({
+    expect(makeActionsForTask({ level: "P3" })[0]).toMatchObject({
       level: "P3",
       taskId: "task-priority-sync",
       targetId: "answer-sync",
       page: "answers",
     });
-    expect(makeActionsForLevel("P0")[0].level).toBe("P0");
-    expect(makeActionsForLevel(undefined)[0].level).toBe("P2");
+    expect(makeActionsForTask({ title: "重练项目复盘", detail: "补充 STAR 结果", level: "P0" })[0]).toMatchObject({
+      level: "P0",
+      title: "重练项目复盘",
+      detail: "答案库: 补充 STAR 结果",
+    });
+    expect(makeActionsForTask({ level: undefined })[0].level).toBe("P2");
   });
 });
