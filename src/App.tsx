@@ -473,9 +473,10 @@ function App() {
   });
 
   const applyLoadedData = (data: InitialApiData | JobPilotBackup) => {
-    const firstActiveOpportunity = data.opportunities.find((item) => item.status !== "ENDED") ?? data.opportunities[0];
-    setOpportunities(data.opportunities);
-    apiOpportunityIdsRef.current = new Set(data.opportunities.map((item) => item.id));
+    const loadedOpportunities = data.opportunities.map((item) => ({ ...item, note: item.note ?? "" }));
+    const firstActiveOpportunity = loadedOpportunities.find((item) => item.status !== "ENDED") ?? loadedOpportunities[0];
+    setOpportunities(loadedOpportunities);
+    apiOpportunityIdsRef.current = new Set(loadedOpportunities.map((item) => item.id));
     setSelectedOpportunityId(firstActiveOpportunity?.id ?? "");
     setInterviewSessions(data.interviewSessions);
     setSelectedInterviewId(data.interviewSessions[0]?.id ?? "");
@@ -2066,8 +2067,9 @@ function App() {
       action,
       actionManual: Boolean(composerDraft.actionManual),
       city: composerDraft.city.trim() || "待定",
-      deadline: composerDraft.deadline.trim(),
+      deadline: composerDraft.dueDate || composerDraft.deadline.trim(),
       dueDate,
+      note: composerDraft.note.trim(),
       resumeId: composerDraft.resumeId || resumeList[0]?.id || "",
       nextAction: composerDraft.nextAction.trim() || "补齐材料后投递",
       jdSummary: recruitmentLink || composerDraft.sourceText.trim() || "从上传材料整理出的岗位记录。",
@@ -3463,7 +3465,7 @@ function App() {
                 </div>
                 <label className="wide-field opportunity-note-field">
                   <span>备注</span>
-                  <textarea value={selectedOpportunity.deadline} onChange={(event) => updateSelectedOpportunity({ deadline: event.target.value })} />
+                  <textarea value={selectedOpportunity.note ?? ""} onChange={(event) => updateSelectedOpportunity({ note: event.target.value })} />
                 </label>
               </div>
               <div className="button-row">

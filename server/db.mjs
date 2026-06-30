@@ -275,6 +275,7 @@ const toOpportunity = (row, sourceAssets = [], timeline = []) => ({
   city: row.city,
   deadline: row.deadline,
   dueDate: row.due_date ?? undefined,
+  note: row.note ?? "",
   resumeId: row.resume_id ?? "",
   nextAction: row.next_action,
   jdSummary: row.jd_summary,
@@ -413,6 +414,7 @@ const createSchema = (db) => {
       city TEXT NOT NULL,
       deadline TEXT NOT NULL,
       due_date TEXT,
+      note TEXT NOT NULL DEFAULT '',
       resume_id TEXT,
       next_action TEXT NOT NULL,
       jd_summary TEXT NOT NULL,
@@ -567,6 +569,8 @@ const ensureColumn = (db, tableName, columnName, definition) => {
 
 const migrateSchema = (db) => {
   ensureColumn(db, "opportunities", "due_date", "TEXT");
+  ensureColumn(db, "opportunities", "note", "TEXT NOT NULL DEFAULT ''");
+  db.prepare("UPDATE opportunities SET note = deadline WHERE (note IS NULL OR note = '') AND TRIM(deadline) <> '' AND deadline <> '待定'").run();
   ensureColumn(db, "opportunities", "action_manual", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "opportunities", "ended_at", "TEXT");
   ensureColumn(db, "opportunities", "ended_reason", "TEXT");
@@ -959,8 +963,8 @@ export const createRepository = (db) => {
     db.prepare(`
       INSERT INTO opportunities (
         id, title, company, status, ended_at, ended_reason, ended_note, previous_status, priority, match, action, action_manual, city, deadline, due_date, resume_id,
-        next_action, jd_summary, jd_text, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        next_action, jd_summary, jd_text, note, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.title?.trim() || "未填写岗位",
@@ -981,6 +985,7 @@ export const createRepository = (db) => {
       input.nextAction?.trim() || opportunityStatusNextAction[status] || "补齐材料后投递",
       input.jdSummary?.trim() || "由岗位推进内上传材料解析生成的岗位记录。",
       input.jdText?.trim() || "待补充 JD 原文。",
+      input.note?.trim() || "",
       timestamp,
       timestamp,
     );
@@ -1053,6 +1058,7 @@ export const createRepository = (db) => {
           city = ?,
           deadline = ?,
           due_date = ?,
+          note = ?,
           resume_id = ?,
           next_action = ?,
           jd_summary = ?,
@@ -1074,6 +1080,7 @@ export const createRepository = (db) => {
       next.city,
       next.deadline,
       next.dueDate || null,
+      next.note ?? "",
       next.resumeId || null,
       next.nextAction,
       next.jdSummary,

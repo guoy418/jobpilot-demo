@@ -238,6 +238,7 @@ export const createModuleComposerDraft = (resumeId = "", opportunityId = ""): Mo
   city: "上海",
   deadline: "",
   dueDate: "",
+  note: "",
   priority: "B",
   match: "HIGH",
   action: "P1",

@@ -64,6 +64,7 @@ export type OpportunityDraft = {
   city: string;
   deadline: string;
   dueDate?: string;
+  note: string;
   priority: OpportunityPriority | "";
   match: OpportunityMatch | "";
   action: OpportunityAction | "";
@@ -139,6 +140,7 @@ export type Opportunity = {
   city: string;
   deadline: string;
   dueDate?: string;
+  note: string;
   resumeId: string;
   nextAction: string;
   jdSummary: string;
@@ -262,6 +264,7 @@ export type ModuleComposerDraft = {
   city: string;
   deadline: string;
   dueDate: string;
+  note: string;
   priority: OpportunityPriority;
   match: OpportunityMatch;
   action: OpportunityAction;

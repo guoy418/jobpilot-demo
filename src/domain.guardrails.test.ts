@@ -192,6 +192,30 @@ describe("shared opportunity rule facade", () => {
     expect(getOpportunityDueDate(opportunity)).toBe("");
   });
 
+  it("normalizes deadline patches without touching note-like fields", () => {
+    const sourceAssets = [{ id: "SRC-1", detail: "内推人备注：周五10-11/10：40面试", content: "JD 原文保持不变" }];
+    const timeline = [{ id: "TL-1", title: "收到面试邀请", detail: "周五10-11/10：40面试", status: "done" }];
+
+    expect(
+      normalizeOpportunityDeadlinePatch({
+        dueDate: "",
+        note: "备注：周五10-11/10：40面试",
+        jdText: "JD 原文",
+        nextAction: "准备面试",
+        sourceAssets,
+        timeline,
+      }),
+    ).toEqual({
+      dueDate: "",
+      deadline: "待定",
+      note: "备注：周五10-11/10：40面试",
+      jdText: "JD 原文",
+      nextAction: "准备面试",
+      sourceAssets,
+      timeline,
+    });
+  });
+
   it("parses English month timeline dates without shifting months", () => {
     expect(parseDateLike("Apr 14 09:30", new Date(2026, 5, 23))?.getTime()).toBe(new Date(2026, 3, 14).getTime());
     expect(parseDateLike("Jun 24", new Date(2026, 5, 23))?.getTime()).toBe(new Date(2026, 5, 24).getTime());

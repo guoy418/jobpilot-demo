@@ -18,6 +18,7 @@ const makeOpportunity = (overrides: Partial<Opportunity> = {}): Opportunity => (
   action: "P2",
   city: "上海",
   deadline: "",
+  note: "",
   resumeId: "resume-1",
   nextAction: "补充材料",
   jdSummary: "",

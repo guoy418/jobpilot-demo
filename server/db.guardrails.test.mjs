@@ -29,6 +29,7 @@ const makeOpportunityInput = (id, overrides = {}) => ({
   action: "P2",
   city: "上海",
   deadline: "待定",
+  note: "",
   resumeId: "RV-101",
   nextAction: "补齐材料后投递",
   jdSummary: "测试岗位",
@@ -174,10 +175,29 @@ describe("repository opportunity deadline updates", () => {
   it("clears deadline text when dueDate is explicitly cleared", async () => {
     const repo = await openTestRepository();
     const id = "OP-TEST-CLEAR-DUE-DATE";
+    const sourceAssets = [
+      {
+        id: `${id}-source`,
+        kind: "referral-note",
+        title: "内推备注",
+        detail: "内推人备注：周五10-11/10：40面试",
+        createdAt: "2026-06-24",
+        content: "JD/沟通原文保持不变",
+      },
+    ];
+    const timeline = [
+      { id: `${id}-created`, occurredAt: "2026-06-24", title: "写入岗位推进", detail: "测试创建", status: "done" },
+      { id: `${id}-next`, occurredAt: "Next", title: "准备面试", detail: "周五10-11/10：40面试", status: "next" },
+    ];
     repo.createOpportunity(
       makeOpportunityInput(id, {
         deadline: "2026-07-03",
         dueDate: "2026-07-03",
+        note: "备注：周五10-11/10：40面试",
+        jdText: "原始 JD：不要被日期清空",
+        nextAction: "准备面试",
+        sourceAssets,
+        timeline,
       }),
     );
 
@@ -186,6 +206,11 @@ describe("repository opportunity deadline updates", () => {
 
     expect(updated.deadline).toBe("待定");
     expect(updated.dueDate).toBeUndefined();
+    expect(updated.note).toBe("备注：周五10-11/10：40面试");
+    expect(updated.jdText).toBe("原始 JD：不要被日期清空");
+    expect(updated.nextAction).toBe("准备面试");
+    expect(updated.sourceAssets).toEqual(sourceAssets);
+    expect(updated.timeline).toEqual(timeline);
     expect(listed.deadline).toBe("待定");
     expect(listed.dueDate).toBeUndefined();
   });
@@ -197,6 +222,9 @@ describe("repository opportunity deadline updates", () => {
       makeOpportunityInput(id, {
         deadline: "2026-07-03",
         dueDate: "2026-07-03",
+        note: "保留备注：周五10-11/10：40面试",
+        jdText: "保留 JD 原文",
+        nextAction: "保留下一步",
       }),
     );
 
@@ -204,6 +232,9 @@ describe("repository opportunity deadline updates", () => {
 
     expect(updated.deadline).toBe("待定");
     expect(updated.dueDate).toBeUndefined();
+    expect(updated.note).toBe("保留备注：周五10-11/10：40面试");
+    expect(updated.jdText).toBe("保留 JD 原文");
+    expect(updated.nextAction).toBe("保留下一步");
   });
 
   it("keeps existing deadline fields when deadline is omitted", async () => {
@@ -220,5 +251,29 @@ describe("repository opportunity deadline updates", () => {
 
     expect(updated.deadline).toBe("2026-07-03");
     expect(updated.dueDate).toBe("2026-07-03");
+  });
+
+  it("keeps omitted note-like fields but applies explicit note edits", async () => {
+    const repo = await openTestRepository();
+    const id = "OP-TEST-NOTE-PATCH";
+    repo.createOpportunity(
+      makeOpportunityInput(id, {
+        deadline: "2026-07-03",
+        dueDate: "2026-07-03",
+        note: "旧备注",
+        jdText: "旧 JD",
+        nextAction: "旧下一步",
+      }),
+    );
+
+    const dateOnlyUpdate = repo.updateOpportunity(id, { dueDate: "2026-07-04" });
+    const noteUpdate = repo.updateOpportunity(id, { note: "新备注：周五10-11/10：40面试" });
+
+    expect(dateOnlyUpdate.note).toBe("旧备注");
+    expect(dateOnlyUpdate.jdText).toBe("旧 JD");
+    expect(dateOnlyUpdate.nextAction).toBe("旧下一步");
+    expect(noteUpdate.note).toBe("新备注：周五10-11/10：40面试");
+    expect(noteUpdate.jdText).toBe("旧 JD");
+    expect(noteUpdate.nextAction).toBe("旧下一步");
   });
 });

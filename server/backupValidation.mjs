@@ -47,6 +47,10 @@ const assertRequiredString = (item, field, label) => {
   if (!isNonEmptyString(item?.[field])) fail(`Backup item ${label}.${field} must be a non-empty string`);
 };
 
+const assertOptionalString = (item, field, label) => {
+  if (item?.[field] !== undefined && typeof item[field] !== "string") fail(`Backup item ${label}.${field} must be a string`);
+};
+
 const assertOptionalArray = (value, label) => {
   if (value === undefined || value === null) return [];
   return assertArray(value, label);
@@ -175,6 +179,7 @@ export const validateBackupPayload = (backup) => {
     ["title", "company", "city", "deadline", "nextAction", "jdSummary", "jdText"].forEach((field) =>
       assertRequiredString(opportunity, field, `opportunities[${index}]`),
     );
+    assertOptionalString(opportunity, "note", `opportunities[${index}]`);
     assertOneOf(opportunity.status, opportunityStatuses, `opportunities[${index}].status`);
     assertOneOf(opportunity.priority, opportunityPriorities, `opportunities[${index}].priority`);
     assertOneOf(opportunity.match, opportunityMatches, `opportunities[${index}].match`);
