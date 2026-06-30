@@ -35,7 +35,7 @@ const createdRecordGroups: Array<{ recordType: TodayCreatedRecordKind; label: st
 const statusLabel: Record<TodayActionHistoryStatus, string> = {
   shown: "未处理",
   completed: "已完成",
-  dismissed: "已跳过",
+  dismissed: "未处理",
 };
 
 const weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"];
@@ -194,7 +194,6 @@ export function TodayActionHistoryDialog({
               <div className="today-history-stats">
                 <span>{selectedSummary.actionTotal} 个行动</span>
                 {selectedSummary.completed > 0 ? <span>{selectedSummary.completed} 已完成</span> : null}
-                {selectedSummary.dismissed > 0 ? <span>{selectedSummary.dismissed} 已跳过</span> : null}
                 <span>{selectedSummary.shown} 未处理</span>
                 {selectedSummary.created > 0 ? <span>{selectedSummary.created} 新建</span> : null}
               </div>
@@ -260,7 +259,7 @@ export function TodayActionHistoryDialog({
                             <div className="today-history-item-header">
                               <span className={`priority ${item.level.toLowerCase()}`}>{item.level}</span>
                               <span className="source-chip">{item.sourceLabel ?? group.label}</span>
-                              <span className={`today-history-status history-status-${item.status}`}>{statusLabel[item.status]}</span>
+                              <span className={`today-history-status history-status-${item.status === "dismissed" ? "shown" : item.status}`}>{statusLabel[item.status]}</span>
                             </div>
                             <h5>{item.title}</h5>
                             {item.detail ? <p>{item.detail}</p> : null}

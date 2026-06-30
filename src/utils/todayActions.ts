@@ -69,6 +69,7 @@ export const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback
       targetId: action.targetId,
       taskId: action.taskId,
       actionKey: action.actionKey,
+      intent: action.intent,
     });
     return items;
   }, []);

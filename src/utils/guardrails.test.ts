@@ -129,6 +129,28 @@ describe("today action utilities", () => {
       taskId: undefined,
     });
     expect(todayActionKey(action)).toBe("opportunity:opp-1");
+
+    const [missingReviewAction] = normalizeTodayActions(
+      [
+        {
+          title: "补充腾讯前端实习生面试复盘",
+          page: "interviews",
+          source: "interview",
+          targetId: "opp-review",
+          actionKey: "interview-review-missing:opp-review",
+          intent: "create-interview-review",
+        },
+      ],
+      fallbackActions,
+    );
+
+    expect(missingReviewAction).toMatchObject({
+      source: "interview",
+      targetId: "opp-review",
+      actionKey: "interview-review-missing:opp-review",
+      intent: "create-interview-review",
+    });
+    expect(todayActionKey(missingReviewAction)).toBe("interview-review-missing:opp-review");
   });
 });
 

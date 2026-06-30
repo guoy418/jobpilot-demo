@@ -334,7 +334,7 @@ describe("today action selector guardrails", () => {
       "投递Byte前端",
       "练习答案卡",
       "完成Meituan数据笔试",
-      "准备XHS产品",
+      "准备XHS产品面试",
       "复盘腾讯一面",
     ]);
 
@@ -397,5 +397,105 @@ describe("today action selector guardrails", () => {
       detail: "答案库: 补充 STAR 结果",
     });
     expect(makeActionsForTask({ level: undefined })[0].level).toBe("P2");
+  });
+
+  it("adds a missing interview review action for waiting opportunities without a linked review", () => {
+    const actions = selectTodayActions(
+      [
+        makeOpportunity({
+          id: "opp-waiting-review",
+          company: "腾讯",
+          title: "前端实习生",
+          status: "WAITING",
+          priority: "A",
+          match: "HIGH",
+          nextAction: "等待一面结果",
+        }),
+      ],
+      [],
+      [],
+      makeWeeklyPlan(),
+      resumeList,
+    );
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      title: "补充腾讯前端实习生面试复盘",
+      detail: "已进入等结果阶段，建议趁记忆新鲜整理问题、原回答和优化回答。",
+      page: "interviews",
+      source: "interview",
+      sourceLabel: "面试复盘 / 待补充",
+      targetId: "opp-waiting-review",
+      actionKey: "interview-review-missing:opp-waiting-review",
+      intent: "create-interview-review",
+    });
+  });
+
+  it("does not add the missing interview review action when a waiting opportunity already has a linked review", () => {
+    const actions = selectTodayActions(
+      [
+        makeOpportunity({
+          id: "opp-linked-review",
+          company: "腾讯",
+          title: "前端实习生",
+          status: "WAITING",
+        }),
+      ],
+      [makeInterview({ id: "int-linked-review", opportunityId: "opp-linked-review", qaPairs: [] })],
+      [],
+      makeWeeklyPlan(),
+      resumeList,
+    );
+
+    expect(actions.map((action) => action.title)).not.toContain("补充腾讯前端实习生面试复盘");
+    expect(actions).toHaveLength(0);
+  });
+
+  it("keeps interviewing opportunities on interview preparation without prompting for a review", () => {
+    const actions = selectTodayActions(
+      [
+        makeOpportunity({
+          id: "opp-interviewing-review",
+          company: "腾讯",
+          title: "前端实习生",
+          status: "INTERVIEWING",
+        }),
+      ],
+      [],
+      [],
+      makeWeeklyPlan(),
+      resumeList,
+    );
+
+    expect(actions.map((action) => action.title)).toEqual(["准备腾讯前端实习生面试"]);
+    expect(actions).not.toEqual(expect.arrayContaining([expect.objectContaining({ intent: "create-interview-review" })]));
+  });
+
+  it("keeps weak linked interview review actions instead of adding the missing review action", () => {
+    const actions = selectTodayActions(
+      [
+        makeOpportunity({
+          id: "opp-waiting-weak-review",
+          company: "腾讯",
+          title: "前端实习生",
+          status: "WAITING",
+        }),
+      ],
+      [
+        makeInterview({
+          id: "int-weak-linked-review",
+          opportunityId: "opp-waiting-weak-review",
+          company: "腾讯",
+          round: "一面",
+          qaPairs: [makeQaPair({ id: "qa-weak-linked", weak: true })],
+        }),
+      ],
+      [],
+      makeWeeklyPlan(),
+      resumeList,
+    );
+
+    expect(actions.map((action) => action.title)).toEqual(["复盘腾讯一面"]);
+    expect(actions).not.toEqual(expect.arrayContaining([expect.objectContaining({ intent: "create-interview-review" })]));
   });
 });

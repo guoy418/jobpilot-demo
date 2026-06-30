@@ -1810,8 +1810,8 @@ export const createRepository = (db) => {
             ? `投递${item.company}${item.title}`
             : item.status === "WRITTEN TEST"
               ? `完成${item.company}${item.title}笔试`
-              : item.status === "INTERVIEWING"
-                ? `准备${item.company}${item.title}`
+            : item.status === "INTERVIEWING"
+                ? `准备${item.company}${item.title}面试`
                 : `跟进${item.company}${item.title}`,
         detail: `${item.nextAction} / 使用 ${resumeName(item.resumeId)}`,
         page: "opportunityDetail",
@@ -1840,6 +1840,25 @@ export const createRepository = (db) => {
         targetId: session.id,
       }));
 
+    const missingInterviewReviewActions = opportunities
+      .filter((opportunity) => opportunity.status === "WAITING")
+      .filter((opportunity) => !interviews.some((session) => session.opportunityId === opportunity.id))
+      .map((opportunity) => ({
+        level: resolveOpportunityAction(opportunity),
+        title: `补充${opportunity.company}${opportunity.title}面试复盘`,
+        detail: "已进入等结果阶段，建议趁记忆新鲜整理问题、原回答和优化回答。",
+        page: "interviews",
+        targetPage: "interviews",
+        filter: "",
+        source: "interview",
+        sourceLabel: "面试复盘 / 待补充",
+        why: "岗位已进入等结果阶段，但还没有关联的面试复盘，适合趁记忆新鲜补齐。",
+        completionOutcome: "导入或创建面试复盘后，这个行动会自动从今日行动移除。",
+        targetId: opportunity.id,
+        actionKey: `interview-review-missing:${opportunity.id}`,
+        intent: "create-interview-review",
+      }));
+
     const weeklyActions = (weeklyPlan?.tasks ?? [])
       .filter((task) => task.status === "open" && task.source !== "opportunity")
       .map((task) => ({
@@ -1855,7 +1874,7 @@ export const createRepository = (db) => {
         ...weeklyRoute(task),
       }));
 
-    const rawActions = [...opportunityActions, ...interviewActions, ...weeklyActions];
+    const rawActions = [...opportunityActions, ...interviewActions, ...missingInterviewReviewActions, ...weeklyActions];
     return sortTodayActions(rawActions.filter((action, index, actions) => actions.findIndex((candidate) => candidate.title === action.title) === index));
   };
 

@@ -2471,6 +2471,10 @@ function App() {
   };
 
   const openTodayAction = (action: TodayAction) => {
+    if (action.intent === "create-interview-review") {
+      openComposer("interview", action.targetId);
+      return;
+    }
     if (action.filter) applyOpportunityActionFilter(action.filter);
     if (action.page === "opportunityDetail") {
       setOpportunityVisibility("ACTIVE");
@@ -2591,6 +2595,12 @@ function App() {
   };
 
   const completeTodayAction = (action: TodayAction) => {
+    if (action.intent === "create-interview-review") {
+      openComposer("interview", action.targetId);
+      setSystemMessage("请先导入面试复盘");
+      return;
+    }
+
     if (action.source === "weekly") {
       const taskId = action.taskId || (action.page === "weekly" ? action.targetId : "");
       recordCompletedTodayAction(action);

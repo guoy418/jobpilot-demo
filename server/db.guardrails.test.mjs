@@ -277,3 +277,43 @@ describe("repository opportunity deadline updates", () => {
     expect(noteUpdate.nextAction).toBe("旧下一步");
   });
 });
+
+describe("repository today action interview review reminders", () => {
+  it("adds and clears missing interview review actions for waiting opportunities", async () => {
+    const repo = await openTestRepository();
+    const id = "OP-TEST-WAITING-REVIEW";
+    repo.createOpportunity(
+      makeOpportunityInput(id, {
+        company: "腾讯",
+        title: "前端实习生",
+        status: "WAITING",
+        nextAction: "等待一面结果",
+      }),
+    );
+
+    const missingReviewAction = repo.getTodayActions().find((action) => action.actionKey === `interview-review-missing:${id}`);
+
+    expect(missingReviewAction).toMatchObject({
+      title: "补充腾讯前端实习生面试复盘",
+      source: "interview",
+      sourceLabel: "面试复盘 / 待补充",
+      targetPage: "interviews",
+      targetId: id,
+      intent: "create-interview-review",
+    });
+
+    repo.createInterview({
+      id: "INT-TEST-LINKED",
+      opportunityId: id,
+      company: "腾讯",
+      role: "前端实习生",
+      round: "一面",
+      date: "2026-06-30",
+      reviewPriority: "P1",
+      qaPairs: [],
+      sourceFiles: [],
+    });
+
+    expect(repo.getTodayActions().some((action) => action.actionKey === `interview-review-missing:${id}`)).toBe(false);
+  });
+});
