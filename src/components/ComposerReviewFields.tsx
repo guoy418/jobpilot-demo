@@ -127,7 +127,7 @@ function OpportunityReviewFields({
         <textarea value={draft.note} onChange={(event) => updateDraft("note", event.target.value)} />
       </label>
       <label className="wide-field">
-        <span>岗位描述 *</span>
+        <span>岗位描述</span>
         <textarea value={draft.sourceText} onChange={(event) => updateDraft("sourceText", event.target.value)} />
       </label>
     </>

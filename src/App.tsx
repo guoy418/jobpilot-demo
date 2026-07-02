@@ -126,6 +126,7 @@ import { selectDashboardSummary, selectResumeName, selectTodayActions, type Toda
 import { formatDueDateDisplay, localDateKey as todayDateKey } from "./utils/date";
 import { BACKUP_SCHEMA_VERSION } from "./utils/backup";
 import { extractionStatusLabel, extractJobLinkFromSource, failedExtractionStatuses, isJobLinkOnlyText } from "./utils/composerSource";
+import { mergeParsedDraftValue } from "./utils/composerDraftMerge";
 import {
   composerValidationMessage,
   formatComposerApiError,
@@ -874,13 +875,13 @@ function App() {
       setComposerDraft((draft) => ({
         ...draft,
         linkedOpportunityId: draft.linkedOpportunityId,
-        company: imported.review.company || linkedOpportunity?.company || draft.company || "待填写公司",
-        role: imported.review.role || linkedOpportunity?.title || draft.role || "待填写岗位",
-        round: imported.review.round || draft.round || "一面",
-        date: imported.review.date || draft.date || "Today",
-        fileName: fileName || draft.fileName || "interview-review.json",
-        sourceText: imported.review.sourceText,
-        nextAction: imported.review.note,
+        company: mergeParsedDraftValue(draft.company, imported.review.company || linkedOpportunity?.company, ["待填写公司"]),
+        role: mergeParsedDraftValue(draft.role, imported.review.role || linkedOpportunity?.title, ["待填写岗位", "待确认岗位"]),
+        round: mergeParsedDraftValue(draft.round, imported.review.round, ["一面"]),
+        date: mergeParsedDraftValue(draft.date, imported.review.date || "Today", ["Today"]),
+        fileName: mergeParsedDraftValue(draft.fileName, fileName || "interview-review.json"),
+        sourceText: mergeParsedDraftValue(draft.sourceText, imported.review.sourceText),
+        nextAction: mergeParsedDraftValue(draft.nextAction, imported.review.note, ["补齐信息后推进"]),
       }));
       setComposerStep("review");
       setComposerParseNotice("");
@@ -897,67 +898,76 @@ function App() {
     const applyLocalParse = () => {
       setComposerParsedQaPairs([]);
       if (composer === "opportunity") {
-      const company = detectCompany(parseText) || composerDraft.company || "待填写公司";
-      const title = detectRoleTitle(parseText, composerDraft.title);
-      const shouldKeepRawTextAsJobDescription = Boolean(rawText) && !(composerSource.sourceKind === "job-link" && rawTextIsOnlyJobLink);
-      const parsedSourceText =
-        (shouldKeepRawTextAsJobDescription ? rawText : "") ||
-        (composerSource.sourceKind === "job-link"
-          ? ""
-          : composerSource.sourceKind === "screenshot"
-            ? `截图文件：${fileName}。文件已保存；开启智能整理后可以识别图片文字。`
-            : `上传文件：${fileName}。文件已保存；如果没有读到内容，可以直接粘贴文字。`);
-      const parsedDeadline = parseText.includes("今晚") ? "Tonight" : parseText.includes("明天") ? "Tomorrow" : composerDraft.deadline;
-      const parsedDueDate = inferDueDateFromText(parsedDeadline);
-      const parsedPriority = parseText.includes("内推") || parseText.includes("急") ? "A" : composerDraft.priority;
-      const parsedMatch = parseText.match(/React|前端|TypeScript|组件|性能/i) ? "HIGH" : composerDraft.match;
-      setComposerDraft((draft) => ({
-        ...draft,
-        company,
-        title,
-        city: detectCity(parseText),
-        deadline: parsedDeadline,
-        dueDate: parsedDueDate || draft.dueDate,
-        match: parsedMatch,
-        priority: parsedPriority,
-        action: computeOpportunityAction({ status: "TO APPLY", deadline: parsedDeadline, dueDate: parsedDueDate || draft.dueDate, match: parsedMatch, priority: parsedPriority }),
-        resumeId: defaultResumeId,
-        nextAction: `确认 ${getResumeName(defaultResumeId)} 后投递`,
-        sourceLabel: fileName || (composerSource.sourceKind === "job-link" ? "招聘链接" : "岗位描述"),
-        sourceText: parsedSourceText,
-      }));
+        const detectedCompany = detectCompany(parseText);
+        const detectedTitle = detectRoleTitle(parseText);
+        const shouldKeepRawTextAsJobDescription = Boolean(rawText) && !(composerSource.sourceKind === "job-link" && rawTextIsOnlyJobLink);
+        const parsedSourceText =
+          (shouldKeepRawTextAsJobDescription ? rawText : "") ||
+          (composerSource.sourceKind === "job-link"
+            ? ""
+            : composerSource.sourceKind === "screenshot"
+              ? `截图文件：${fileName}。文件已保存；开启智能整理后可以识别图片文字。`
+              : `上传文件：${fileName}。文件已保存；如果没有读到内容，可以直接粘贴文字。`);
+        const sourceLabel = fileName || (composerSource.sourceKind === "job-link" ? "招聘链接" : "岗位描述");
+        setComposerDraft((draft) => {
+          const parsedDeadline = parseText.includes("今晚") ? "Tonight" : parseText.includes("明天") ? "Tomorrow" : "";
+          const nextDeadline = mergeParsedDraftValue(draft.deadline, parsedDeadline);
+          const nextDueDate = draft.dueDate || inferDueDateFromText(nextDeadline);
+          const nextPriority = parseText.includes("内推") || parseText.includes("急") ? mergeParsedDraftValue(draft.priority, "A", ["B"]) as OpportunityPriority : draft.priority;
+          const nextMatch = parseText.match(/React|前端|TypeScript|组件|性能/i) ? mergeParsedDraftValue(draft.match, "HIGH", ["HIGH"]) as Opportunity["match"] : draft.match;
+          const nextAction = draft.actionManual
+            ? draft.action
+            : computeOpportunityAction({ status: "TO APPLY", deadline: nextDeadline, dueDate: nextDueDate, match: nextMatch, priority: nextPriority });
+          return {
+            ...draft,
+            company: mergeParsedDraftValue(draft.company, detectedCompany, ["待填写公司"]),
+            title: mergeParsedDraftValue(draft.title, detectedTitle, ["待确认岗位", "待填写岗位"]),
+            city: mergeParsedDraftValue(draft.city, detectCity(parseText), ["上海"]),
+            deadline: nextDeadline,
+            dueDate: nextDueDate,
+            match: nextMatch,
+            priority: nextPriority,
+            action: nextAction,
+            resumeId: draft.resumeId || defaultResumeId,
+            nextAction: mergeParsedDraftValue(draft.nextAction, `确认 ${getResumeName(defaultResumeId)} 后投递`, ["补齐信息后推进"]),
+            sourceLabel: mergeParsedDraftValue(draft.sourceLabel, sourceLabel, ["模块内新增"]),
+            sourceText: mergeParsedDraftValue(draft.sourceText, parsedSourceText),
+          };
+        });
       }
 
       if (composer === "interview") {
-      const isAudio = composerSource.sourceKind === "audio";
-      const transcript =
-        rawText ||
-        (isAudio
-          ? `录音文件：${fileName}。文件已保存；开启录音转文字后可以继续整理。`
-          : `文字稿文件：${fileName}。如果没有读到内容，可以直接粘贴文字稿。`);
-      setComposerDraft((draft) => ({
-        ...draft,
-        linkedOpportunityId: draft.linkedOpportunityId,
-        company: detectCompany(parseText) || linkedOpportunity?.company || draft.company || "待填写公司",
-        role: detectRoleTitle(parseText, linkedOpportunity?.title || draft.role),
-        round: parseText.includes("二面") ? "二面" : parseText.includes("HR") ? "HR 面" : draft.round,
-        date: draft.date || "Today",
-        fileName: fileName || draft.fileName || "interview-transcript.md",
-        sourceText: transcript,
-        nextAction: composerSource.note,
-      }));
+        const isAudio = composerSource.sourceKind === "audio";
+        const transcript =
+          rawText ||
+          (isAudio
+            ? `录音文件：${fileName}。文件已保存；开启录音转文字后可以继续整理。`
+            : `文字稿文件：${fileName}。如果没有读到内容，可以直接粘贴文字稿。`);
+        const parsedRound = parseText.includes("二面") ? "二面" : parseText.includes("HR") ? "HR 面" : "";
+        setComposerDraft((draft) => ({
+          ...draft,
+          linkedOpportunityId: draft.linkedOpportunityId,
+          company: mergeParsedDraftValue(draft.company, detectCompany(parseText) || linkedOpportunity?.company, ["待填写公司"]),
+          role: mergeParsedDraftValue(draft.role, detectRoleTitle(parseText, linkedOpportunity?.title || ""), ["待填写岗位", "待确认岗位"]),
+          round: mergeParsedDraftValue(draft.round, parsedRound, ["一面"]),
+          date: draft.date || "Today",
+          fileName: mergeParsedDraftValue(draft.fileName, fileName || "interview-transcript.md"),
+          sourceText: mergeParsedDraftValue(draft.sourceText, transcript),
+          nextAction: mergeParsedDraftValue(draft.nextAction, composerSource.note, ["补齐信息后推进"]),
+        }));
       }
 
       if (composer === "resume") {
-      const baseName = fileBaseName(fileName) || "New Resume Version";
-      setComposerDraft((draft) => ({
-        ...draft,
-        title: draft.title || baseName,
-        fileName,
-        roles: rawText.match(/产品|策略|增长/) ? "产品 / 策略" : rawText.match(/数据|SQL|Python/) ? "数据分析" : "前端 / 全栈",
-        points: rawText || "文件已保存；如果没有读到内容，可以直接粘贴简历文字。",
-        summary: "请确认简历定位和核心卖点。",
-      }));
+        const baseName = fileBaseName(fileName) || "New Resume Version";
+        const parsedRoles = rawText.match(/产品|策略|增长/) ? "产品 / 策略" : rawText.match(/数据|SQL|Python/) ? "数据分析" : "前端 / 全栈";
+        setComposerDraft((draft) => ({
+          ...draft,
+          title: mergeParsedDraftValue(draft.title, baseName),
+          fileName: mergeParsedDraftValue(draft.fileName, fileName),
+          roles: mergeParsedDraftValue(draft.roles, parsedRoles),
+          points: mergeParsedDraftValue(draft.points, rawText || "文件已保存；如果没有读到内容，可以直接粘贴简历文字。"),
+          summary: mergeParsedDraftValue(draft.summary, "请确认简历定位和核心卖点。"),
+        }));
       }
 
       setComposerStep("review");
@@ -1034,29 +1044,37 @@ function App() {
             return;
           }
           setComposerSource((source) => ({ ...source, extractionStatus: parsed.extractionStatus || source.extractionStatus }));
-          setComposerDraft((draft) => ({
-            ...draft,
-            company: parsed.company || draft.company,
-            title: parsed.title || draft.title,
-            city: parsed.city || draft.city,
-            deadline: parsed.deadline || draft.deadline,
-            dueDate: parsed.dueDate || inferDueDateFromText(parsed.deadline || draft.deadline) || draft.dueDate,
-            match: (parsed.match as ModuleComposerDraft["match"]) || draft.match,
-            priority: (parsed.priority as ModuleComposerDraft["priority"]) || draft.priority,
-            action:
-              (parsed.action as ModuleComposerDraft["action"]) ||
-              computeOpportunityAction({
-                status: "TO APPLY",
-                deadline: parsed.deadline || draft.deadline,
-                dueDate: parsed.dueDate || draft.dueDate,
-                match: ((parsed.match as ModuleComposerDraft["match"]) || draft.match) as Opportunity["match"],
-                priority: ((parsed.priority as ModuleComposerDraft["priority"]) || draft.priority) as Opportunity["priority"],
-              }),
-            resumeId: defaultResumeId,
-            nextAction: `确认 ${getResumeName(defaultResumeId)} 后投递`,
-            sourceLabel: parsed.sourceLabel || draft.sourceLabel,
-            sourceText: parsed.sourceText || draft.sourceText,
-          }));
+          setComposerDraft((draft) => {
+            const nextDeadline = mergeParsedDraftValue(draft.deadline, parsed.deadline);
+            const nextDueDate = draft.dueDate || parsed.dueDate || inferDueDateFromText(nextDeadline);
+            const nextMatch = mergeParsedDraftValue(draft.match, parsed.match, ["HIGH"]) as Opportunity["match"];
+            const nextPriority = mergeParsedDraftValue(draft.priority, parsed.priority, ["B"]) as OpportunityPriority;
+            const nextAction = draft.actionManual
+              ? draft.action
+              : ((parsed.action as ModuleComposerDraft["action"]) ||
+                computeOpportunityAction({
+                  status: "TO APPLY",
+                  deadline: nextDeadline,
+                  dueDate: nextDueDate,
+                  match: nextMatch,
+                  priority: nextPriority,
+                }));
+            return {
+              ...draft,
+              company: mergeParsedDraftValue(draft.company, parsed.company, ["待填写公司"]),
+              title: mergeParsedDraftValue(draft.title, parsed.title, ["待确认岗位", "待填写岗位"]),
+              city: mergeParsedDraftValue(draft.city, parsed.city, ["上海"]),
+              deadline: nextDeadline,
+              dueDate: nextDueDate,
+              match: nextMatch,
+              priority: nextPriority,
+              action: nextAction,
+              resumeId: draft.resumeId || defaultResumeId,
+              nextAction: mergeParsedDraftValue(draft.nextAction, parsed.nextAction || `确认 ${getResumeName(defaultResumeId)} 后投递`, ["补齐信息后推进"]),
+              sourceLabel: mergeParsedDraftValue(draft.sourceLabel, parsed.sourceLabel, ["模块内新增"]),
+              sourceText: mergeParsedDraftValue(draft.sourceText, parsed.sourceText),
+            };
+          });
         }
         if (composer === "interview") {
           const parsed = (await parseInterviewApi(payload)) as Record<string, string> & { qaPairs?: unknown; extractionError?: string; aiError?: string };
@@ -1073,13 +1091,13 @@ function App() {
           setComposerDraft((draft) => ({
             ...draft,
             linkedOpportunityId: draft.linkedOpportunityId,
-            company: parsed.company || linkedOpportunity?.company || draft.company,
-            role: parsed.role || linkedOpportunity?.title || draft.role,
-            round: parsed.round || draft.round,
-            date: parsed.date || draft.date || "Today",
-            fileName: parsed.fileName || fileName || draft.fileName,
-            sourceText: parsed.sourceText || draft.sourceText,
-            nextAction: parsed.note || composerSource.note,
+            company: mergeParsedDraftValue(draft.company, parsed.company || linkedOpportunity?.company, ["待填写公司"]),
+            role: mergeParsedDraftValue(draft.role, parsed.role || linkedOpportunity?.title, ["待填写岗位", "待确认岗位"]),
+            round: mergeParsedDraftValue(draft.round, parsed.round, ["一面"]),
+            date: mergeParsedDraftValue(draft.date, parsed.date || "Today", ["Today"]),
+            fileName: mergeParsedDraftValue(draft.fileName, parsed.fileName || fileName),
+            sourceText: mergeParsedDraftValue(draft.sourceText, parsed.sourceText),
+            nextAction: mergeParsedDraftValue(draft.nextAction, parsed.note || composerSource.note, ["补齐信息后推进"]),
           }));
         }
         if (composer === "resume") {
@@ -1095,11 +1113,11 @@ function App() {
           setComposerSource((source) => ({ ...source, extractionStatus: parsed.extractionStatus || source.extractionStatus }));
           setComposerDraft((draft) => ({
             ...draft,
-            title: parsed.title || draft.title,
-            fileName: parsed.fileName || fileName,
-            roles: parsed.roles || draft.roles,
-            points: parsed.points || draft.points,
-            summary: parsed.summary || draft.summary,
+            title: mergeParsedDraftValue(draft.title, parsed.title),
+            fileName: mergeParsedDraftValue(draft.fileName, parsed.fileName || fileName),
+            roles: mergeParsedDraftValue(draft.roles, parsed.roles),
+            points: mergeParsedDraftValue(draft.points, parsed.points),
+            summary: mergeParsedDraftValue(draft.summary, parsed.summary),
           }));
         }
         setComposerStep("review");
@@ -2562,7 +2580,7 @@ function App() {
         <button type="button" className="today-title-save-button" onClick={(event) => saveTodayActionTitle(action, event)}>
           保存
         </button>
-        <button type="button" className="today-title-cancel-button" onClick={cancelTodayActionTitleEdit}>
+        <button type="button" className="today-title-cancel-button" onClick={(event) => cancelTodayActionTitleEdit(event)}>
           取消
         </button>
       </span>

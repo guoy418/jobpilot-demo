@@ -16,7 +16,7 @@ const draft = () => createModuleComposerDraft("resume-1", "opportunity-1");
 const source = () => createModuleComposerSource("jd-text");
 
 describe("composer validation utilities", () => {
-  it("rejects opportunity drafts that still need confirmed company, role, or JD text", () => {
+  it("rejects opportunity drafts that still need confirmed company or role", () => {
     const nextDraft = {
       ...draft(),
       company: "待填写公司",
@@ -27,7 +27,7 @@ describe("composer validation utilities", () => {
     const result = validateOpportunityComposerDraft(nextDraft, source());
 
     expect(result.ok).toBe(false);
-    expect(result.ok ? [] : result.errors.map((error) => error.field)).toEqual(["company", "title", "sourceText"]);
+    expect(result.ok ? [] : result.errors.map((error) => error.field)).toEqual(["company", "title"]);
     expect(composerValidationMessage(result)).toContain("真实公司名称");
   });
 
@@ -37,6 +37,17 @@ describe("composer validation utilities", () => {
       company: "腾讯",
       title: "前端实习生",
       sourceText: "负责 React 组件开发和性能优化。",
+    };
+
+    expect(validateOpportunityComposerDraft(nextDraft, source())).toEqual({ ok: true, errors: [] });
+  });
+
+  it("accepts opportunity drafts without JD text", () => {
+    const nextDraft = {
+      ...draft(),
+      company: "腾讯",
+      title: "前端实习生",
+      sourceText: "",
     };
 
     expect(validateOpportunityComposerDraft(nextDraft, source())).toEqual({ ok: true, errors: [] });

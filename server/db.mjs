@@ -984,7 +984,7 @@ export const createRepository = (db) => {
       input.resumeId || null,
       input.nextAction?.trim() || opportunityStatusNextAction[status] || "补齐材料后投递",
       input.jdSummary?.trim() || "由岗位推进内上传材料解析生成的岗位记录。",
-      input.jdText?.trim() || "待补充 JD 原文。",
+      input.jdText?.trim() || "",
       input.note?.trim() || "",
       timestamp,
       timestamp,
